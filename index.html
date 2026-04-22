@@ -1098,47 +1098,85 @@ function openCameraFor(inputId, callback){
         <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
           <div style="width:220px;height:120px;border:2px solid var(--verde);border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,.45);"></div>
         </div>
+        <canvas id="cam-canvas" style="display:none;"></canvas>
       </div>
       <div id="cam-status" style="padding:12px 16px;text-align:center;font-size:12px;color:var(--grigio);">Avvio fotocamera…</div>
       <div style="padding:0 16px 16px;display:flex;justify-content:center;">
-        <button id="cam-cancel" style="${btnStyle('ghost',false)}">Annulla</button>
+        <button id="cam-cancel" style="background:transparent;color:var(--grigio);border:1px solid var(--bordo);border-radius:6px;font-family:inherit;font-weight:600;font-size:13px;padding:10px 22px;cursor:pointer;">Annulla</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
 
   let stream=null, scanning=true;
+  const setStatus=t=>{ const el=overlay.querySelector('#cam-status'); if(el) el.textContent=t; };
   const close=()=>{ scanning=false; if(stream) stream.getTracks().forEach(t=>t.stop()); overlay.remove(); };
   overlay.querySelector('#cam-close').onclick=close;
   overlay.querySelector('#cam-cancel').onclick=close;
 
   (async()=>{
     try{
-      // Safari iOS: getUserMedia DEVE essere chiamato prima di qualsiasi await
-      const streamPromise = navigator.mediaDevices.getUserMedia({
+      // getUserMedia chiamato immediatamente (Safari iOS richiede gesto utente diretto)
+      stream = await navigator.mediaDevices.getUserMedia({
         video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:720} }
       });
-      // Carica ZXing in parallelo
-      const zxingPromise = window.ZXing
-        ? Promise.resolve()
-        : new Promise((res,rej)=>{
-            const s=document.createElement('script');
-            s.src='https://cdnjs.cloudflare.com/ajax/libs/zxing-js/0.21.3/umd/index.min.js';
-            s.onload=res; s.onerror=()=>rej(new Error('ZXing non caricabile'));
-            document.head.appendChild(s);
-          });
-      [stream] = await Promise.all([streamPromise, zxingPromise]);
       const video=overlay.querySelector('#cam-video');
       video.srcObject=stream;
-      overlay.querySelector('#cam-status').textContent='Punta la fotocamera sul barcode';
+      await video.play().catch(()=>{});
+      setStatus('Punta la fotocamera sul barcode');
+
+      // Strategia 1: BarcodeDetector API nativa (Chrome 83+, Edge 83+, Safari 17.4+)
+      if(window.BarcodeDetector){
+        const detector=new BarcodeDetector({
+          formats:['ean_13','ean_8','qr_code','code_128','code_39','itf','upc_a','upc_e','data_matrix']
+        });
+        const tick=async()=>{
+          if(!scanning) return;
+          try{
+            const results=await detector.detect(video);
+            if(results.length>0){ scanning=false; close(); callback(results[0].rawValue); return; }
+          } catch{}
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+        return;
+      }
+
+      // Strategia 2: ZXing da CDN (fallback per Firefox e browser senza BarcodeDetector)
+      setStatus('Caricamento decoder…');
+      const ZXING_URLS=[
+        'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js',
+        'https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js',
+      ];
+      if(!window.ZXing){
+        let loaded=false;
+        for(const url of ZXING_URLS){
+          try{
+            await new Promise((res,rej)=>{
+              const s=document.createElement('script');
+              s.src=url; s.onload=res;
+              s.onerror=()=>rej(new Error('fail'));
+              document.head.appendChild(s);
+            });
+            loaded=true; break;
+          } catch{}
+        }
+        if(!loaded) throw new Error('Decoder non caricabile. Verificare la connessione internet.');
+      }
+      setStatus('Punta la fotocamera sul barcode');
       const ZX=window.ZXing;
       const hints=new Map();
-      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS,[ZX.BarcodeFormat.EAN_13,ZX.BarcodeFormat.EAN_8,ZX.BarcodeFormat.QR_CODE,ZX.BarcodeFormat.CODE_128,ZX.BarcodeFormat.CODE_39,ZX.BarcodeFormat.DATA_MATRIX,ZX.BarcodeFormat.ITF,ZX.BarcodeFormat.UPC_A]);
+      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS,[
+        ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.EAN_8,
+        ZX.BarcodeFormat.QR_CODE, ZX.BarcodeFormat.CODE_128,
+        ZX.BarcodeFormat.CODE_39, ZX.BarcodeFormat.DATA_MATRIX,
+        ZX.BarcodeFormat.ITF, ZX.BarcodeFormat.UPC_A,
+      ]);
       hints.set(ZX.DecodeHintType.TRY_HARDER,true);
       const reader=new ZX.MultiFormatReader(); reader.setHints(hints);
       const canvas=document.createElement('canvas'); const ctx=canvas.getContext('2d');
       const tick=()=>{
         if(!scanning) return;
-        if(video.readyState===video.HAVE_ENOUGH_DATA){
+        if(video.readyState>=2){
           canvas.width=video.videoWidth; canvas.height=video.videoHeight;
           ctx.drawImage(video,0,0);
           try{
@@ -1152,11 +1190,16 @@ function openCameraFor(inputId, callback){
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
+
     } catch(e){
-      const msg=e.name==='NotAllowedError'
-        ? 'Permesso fotocamera negato. Vai in Impostazioni iPhone → Safari → Fotocamera → Consenti.'
-        : 'Fotocamera non disponibile: '+e.message;
-      overlay.querySelector('#cam-status').textContent=msg;
+      let msg='Fotocamera non disponibile.';
+      if(e.name==='NotAllowedError'||e.name==='PermissionDeniedError')
+        msg='Permesso fotocamera negato. Controlla le impostazioni del browser.';
+      else if(e.name==='NotFoundError')
+        msg='Nessuna fotocamera trovata su questo dispositivo.';
+      else if(e.message)
+        msg=e.message;
+      setStatus(msg);
     }
   })();
 }
