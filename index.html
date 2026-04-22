@@ -1425,212 +1425,257 @@ async function submitResetPass(userId){
 // CAMERA SCANNER
 // ════════════════════════════════════════════════════════════════
 function openCameraFor(inputId, callback){
-  const overlay=document.createElement('div');
-  overlay.style.cssText='position:fixed;inset:0;background:#000000ee;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000;padding:16px;';
-  overlay.innerHTML=`
-    <div style="background:#fff;border-radius:12px;overflow:hidden;width:100%;max-width:480px;box-shadow:0 24px 80px #000;">
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:#000000ee;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000;padding:16px;';
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:12px;overflow:hidden;width:100%;max-width:500px;box-shadow:0 24px 80px #000;">
       <div style="background:#2c2e2f;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">
         <span style="color:#fff;font-weight:700;font-size:14px;">📷 Scansione barcode</span>
-        <button id="cam-close" style="background:none;border:none;color:#fff;cursor:pointer;font-size:20px;">×</button>
+        <button id="cam-close" style="background:none;border:none;color:#fff;cursor:pointer;font-size:22px;line-height:1;padding:0 4px;">×</button>
       </div>
-      <div style="position:relative;background:#000;min-height:200px;">
-        <video id="cam-video" autoplay playsinline muted style="width:100%;max-height:320px;display:block;object-fit:cover;"></video>
-        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
-          <div style="width:220px;height:120px;border:2px solid #9DBF60;border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,.5);"></div>
+      <!-- Tab switcher -->
+      <div style="display:flex;border-bottom:1px solid #e2e4e2;">
+        <button id="tab-live" onclick="camSwitchTab('live')" style="flex:1;padding:10px;border:none;background:#eef4e3;color:#9DBF60;font-weight:700;font-size:12px;cursor:pointer;border-bottom:2px solid #9DBF60;">📹 Live</button>
+        <button id="tab-foto" onclick="camSwitchTab('foto')" style="flex:1;padding:10px;border:none;background:#fff;color:#77797A;font-weight:600;font-size:12px;cursor:pointer;border-bottom:2px solid transparent;">📸 Foto</button>
+      </div>
+      <!-- Live scanner -->
+      <div id="panel-live">
+        <div style="position:relative;background:#000;min-height:240px;">
+          <video id="cam-video" autoplay playsinline muted style="width:100%;max-height:300px;display:block;object-fit:cover;"></video>
+          <canvas id="cam-canvas" style="display:none;"></canvas>
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
+            <div style="width:75%;max-width:280px;height:120px;border:2.5px solid #9DBF60;border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,.55);"></div>
+          </div>
         </div>
+        <div id="cam-status" style="padding:10px 16px;text-align:center;font-size:12px;color:#77797A;min-height:34px;">Avvio fotocamera…</div>
+        <div id="cam-debug"  style="padding:0 16px 2px;text-align:center;font-size:10px;color:#c8c9ca;font-family:monospace;min-height:14px;"></div>
       </div>
-      <div id="cam-status" style="padding:10px 16px;text-align:center;font-size:12px;color:#77797A;min-height:40px;">Avvio fotocamera…</div>
-      <div id="cam-debug" style="padding:0 16px 4px;text-align:center;font-size:10px;color:#c8c9ca;font-family:monospace;"></div>
+      <!-- Foto upload (fallback) -->
+      <div id="panel-foto" style="display:none;padding:24px 16px;text-align:center;">
+        <div style="font-size:13px;color:#77797A;margin-bottom:16px;">Scatta una foto al barcode o selezionane una dalla galleria</div>
+        <label style="display:inline-block;background:#9DBF60;color:#fff;border-radius:6px;padding:12px 24px;cursor:pointer;font-weight:700;font-size:13px;">
+          📷 Apri fotocamera
+          <input id="cam-file" type="file" accept="image/*" capture="environment" style="display:none;">
+        </label>
+        <div style="margin-top:12px;">
+          <label style="display:inline-block;background:transparent;color:#77797A;border:1px solid #e2e4e2;border-radius:6px;padding:10px 20px;cursor:pointer;font-size:12px;">
+            🖼 Dalla galleria
+            <input id="cam-gallery" type="file" accept="image/*" style="display:none;">
+          </label>
+        </div>
+        <div id="foto-status" style="margin-top:14px;font-size:12px;color:#77797A;min-height:20px;"></div>
+        <canvas id="foto-canvas" style="display:none;max-width:100%;border-radius:6px;margin-top:8px;"></canvas>
+      </div>
       <div style="padding:8px 16px 16px;display:flex;justify-content:center;">
         <button id="cam-cancel" style="background:transparent;color:#77797A;border:1px solid #e2e4e2;border-radius:6px;font-family:inherit;font-weight:600;font-size:13px;padding:10px 22px;cursor:pointer;">Annulla</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
 
-  let stream=null, scanning=true, frameCount=0;
-  const setStatus = t => { const el=overlay.querySelector('#cam-status'); if(el) el.textContent=t; };
-  const setDebug  = t => { const el=overlay.querySelector('#cam-debug');  if(el) el.textContent=t; };
-  const close = () => {
-    scanning=false;
+  let stream = null, active = true, zxReader = null;
+  const $ = id => overlay.querySelector('#'+id);
+  const st = t => { const el=$('cam-status'); if(el) el.textContent=t; };
+  const db = t => { const el=$('cam-debug');  if(el) el.textContent=t; };
+  const fs = t => { const el=$('foto-status');if(el) el.textContent=t; };
+
+  const done = val => {
+    active = false;
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    overlay.remove();
+    callback(val);
+  };
+  const cancel = () => {
+    active = false;
     if(stream) stream.getTracks().forEach(t=>t.stop());
     overlay.remove();
   };
-  overlay.querySelector('#cam-close').onclick = close;
-  overlay.querySelector('#cam-cancel').onclick = close;
 
-  (async()=>{
-    try{
-      // Su Safari iOS la fotocamera posteriore può dare 1080x1920 in portrait
-      // ZXing funziona molto meglio sotto 1280px — richiediamo max 1280
-      stream = await navigator.mediaDevices.getUserMedia({
-        video:{
-          facingMode: 'environment',
-          width:  { ideal: 1280, max: 1280 },
-          height: { ideal: 720,  max: 1280 }
-        }
-      });
+  $('cam-close').onclick  = cancel;
+  $('cam-cancel').onclick = cancel;
 
-      const video = overlay.querySelector('#cam-video');
-      video.srcObject = stream;
+  // ── Tab switcher ────────────────────────────────────────────────
+  window.camSwitchTab = tab => {
+    $('panel-live').style.display = tab==='live' ? '' : 'none';
+    $('panel-foto').style.display = tab==='foto' ? '' : 'none';
+    $('tab-live').style.cssText += tab==='live'
+      ? 'background:#eef4e3;color:#9DBF60;border-bottom-color:#9DBF60;font-weight:700;'
+      : 'background:#fff;color:#77797A;border-bottom-color:transparent;font-weight:600;';
+    $('tab-foto').style.cssText += tab==='foto'
+      ? 'background:#eef4e3;color:#9DBF60;border-bottom-color:#9DBF60;font-weight:700;'
+      : 'background:#fff;color:#77797A;border-bottom-color:transparent;font-weight:600;';
+  };
 
-      // Aspetta che il video sia pronto
-      await new Promise(res=>{
-        video.onloadedmetadata = () => { video.play().then(res).catch(res); };
-        setTimeout(res, 3000); // timeout di sicurezza
-      });
+  // ── Foto upload handler ─────────────────────────────────────────
+  const handleFileInput = async file => {
+    if(!file) return;
+    fs('Analisi immagine…');
+    const img = new Image();
+    img.onload = async () => {
+      const fc = $('foto-canvas');
+      const scale = Math.min(800/Math.max(img.width,img.height), 1);
+      fc.width  = Math.round(img.width*scale);
+      fc.height = Math.round(img.height*scale);
+      fc.style.display = 'block';
+      const ctx = fc.getContext('2d',{willReadFrequently:true});
+      ctx.drawImage(img, 0, 0, fc.width, fc.height);
 
-      const track = stream.getVideoTracks()[0];
-      const settings = track.getSettings();
-      setDebug(`${settings.width}x${settings.height} | ${settings.facingMode||'camera'}`);
-
-      // Tenta autofocus se disponibile
-      if(track.getCapabilities && track.applyConstraints){
-        const caps = track.getCapabilities();
-        if(caps.focusMode && caps.focusMode.includes('continuous')){
-          await track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});
-        }
-      }
-
-      // ── Strategia 1: BarcodeDetector nativa ──────────────────
+      // Prova BarcodeDetector
       if(typeof BarcodeDetector !== 'undefined'){
-        setStatus('Punta il barcode nel riquadro verde…');
-        setDebug(prev => prev + ' | BarcodeDetector');
-
-        let supported = ['qr_code','ean_13','ean_8','code_128','code_39','itf','upc_a','upc_e','data_matrix','aztec','pdf417'];
         try {
-          supported = await BarcodeDetector.getSupportedFormats();
+          const det = new BarcodeDetector({formats:['ean_13','ean_8','qr_code','code_128','code_39','itf','upc_a','upc_e','data_matrix']});
+          const res = await det.detect(fc);
+          if(res.length){ fs('✅ Letto!'); setTimeout(()=>done(res[0].rawValue),300); return; }
         } catch{}
+      }
+      // Prova ZXing se disponibile
+      if(zxReader){
+        try {
+          const imgData = ctx.getImageData(0,0,fc.width,fc.height);
+          const lum = new zxReader.ZX.RGBLuminanceSource(imgData.data,fc.width,fc.height);
+          const bmp = new zxReader.ZX.BinaryBitmap(new zxReader.ZX.HybridBinarizer(lum));
+          const r = zxReader.reader.decode(bmp);
+          if(r){ fs('✅ Letto!'); setTimeout(()=>done(r.getText()),300); return; }
+        } catch{}
+      }
+      fs('⚠️ Barcode non trovato. Riprova con foto più nitida e ravvicinata.');
+    };
+    img.src = URL.createObjectURL(file);
+  };
 
-        const detector = new BarcodeDetector({ formats: supported });
-        let lastTry = 0;
+  $('cam-file').onchange    = e => handleFileInput(e.target.files[0]);
+  $('cam-gallery').onchange = e => handleFileInput(e.target.files[0]);
 
-        const tick = async () => {
-          if(!scanning) return;
-          frameCount++;
-          const now = Date.now();
-          // Prova ogni 200ms (5fps) per non sovraccaricare
-          if(now - lastTry >= 200 && video.readyState >= 2 && video.videoWidth > 0){
-            lastTry = now;
+  // ── Live scanner ────────────────────────────────────────────────
+  (async () => {
+    try {
+      // getUserMedia PRIMA di qualsiasi await (requisito Safari iOS)
+      stream = await navigator.mediaDevices.getUserMedia({
+        video:{ facingMode:'environment', width:{ideal:1280,max:1920}, height:{ideal:720,max:1920} }
+      });
+      const video = $('cam-video');
+      video.srcObject = stream;
+      await new Promise(res=>{ video.onloadedmetadata=()=>video.play().then(res).catch(res); setTimeout(res,4000); });
+      if(!active) return;
+      const vw = video.videoWidth||1280, vh = video.videoHeight||720;
+
+      // ── Strategia A: BarcodeDetector nativa ─────────────────────
+      if(typeof BarcodeDetector !== 'undefined'){
+        let fmts=['qr_code','ean_13','ean_8','code_128','code_39','itf','upc_a','upc_e','data_matrix','aztec','pdf417'];
+        try{ fmts=await BarcodeDetector.getSupportedFormats(); }catch{}
+        const det = new BarcodeDetector({formats:fmts});
+        st('Punta il barcode nel riquadro verde…');
+        db(`${vw}x${vh} | BarcodeDetector`);
+        let last=0, n=0;
+        const tick = async()=>{
+          if(!active) return;
+          const now=Date.now();
+          if(now-last>=300 && video.readyState>=2){
+            last=now; n++;
             try{
-              const results = await detector.detect(video);
-              if(results && results.length > 0){
-                scanning = false;
-                close();
-                callback(results[0].rawValue);
-                return;
-              }
-              if(frameCount % 15 === 0) setDebug(`BarcodeDetector | frame ${frameCount} | nessun codice`);
-            } catch(e){
-              if(frameCount % 15 === 0) setDebug(`BD err: ${e.message}`);
-            }
+              const r=await det.detect(video);
+              if(r.length){ done(r[0].rawValue); return; }
+            }catch(e){ db(`BD err:${e.message}`); }
+            if(n%6===0) db(`${vw}x${vh} | BD | frame ${n}`);
           }
-          if(scanning) requestAnimationFrame(tick);
+          if(active) requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
         return;
       }
 
-      // ── Strategia 2: ZXing via CDN multipli ──────────────────
-      setStatus('Caricamento decoder barcode…');
-      const CDNS = [
+      // ── Strategia B: ZXing UMD con preloading ───────────────────
+      st('Caricamento decoder…');
+      const CDNS=[
+        'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.2/umd/index.min.js',
         'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js',
         'https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js',
-        'https://cdn.jsdelivr.net/npm/@zxing/library/umd/index.min.js',
       ];
-
       if(!window.ZXing){
-        let ok = false;
+        let ok=false;
         for(const url of CDNS){
           try{
             await new Promise((res,rej)=>{
-              const s = document.createElement('script');
-              s.src = url;
-              s.onload = res;
-              s.onerror = ()=>rej(new Error('cdn fail'));
+              const s=document.createElement('script');
+              s.src=url; s.onload=res; s.onerror=()=>rej();
               document.head.appendChild(s);
             });
-            ok = true;
-            setDebug('ZXing loaded: '+url.split('/')[2]);
-            break;
-          } catch{ continue; }
+            ok=true; break;
+          }catch{ continue; }
         }
         if(!ok){
-          setStatus('⚠️ Decoder non disponibile. Prova a digitare il codice manualmente.');
+          st('⚠️ Decoder non caricabile. Usa il tab 📸 Foto.');
+          db('Nessuna CDN raggiungibile');
           return;
         }
       }
 
-      setStatus('Punta il barcode nel riquadro verde…');
-      const ZX = window.ZXing;
-      const hints = new Map();
+      const ZX=window.ZXing;
+      const hints=new Map();
       hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS,[
-        ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.EAN_8,
-        ZX.BarcodeFormat.QR_CODE, ZX.BarcodeFormat.CODE_128,
-        ZX.BarcodeFormat.CODE_39, ZX.BarcodeFormat.DATA_MATRIX,
-        ZX.BarcodeFormat.ITF, ZX.BarcodeFormat.UPC_A, ZX.BarcodeFormat.UPC_E,
-        ZX.BarcodeFormat.AZTEC, ZX.BarcodeFormat.PDF_417,
+        ZX.BarcodeFormat.EAN_13,ZX.BarcodeFormat.EAN_8,
+        ZX.BarcodeFormat.QR_CODE,ZX.BarcodeFormat.CODE_128,
+        ZX.BarcodeFormat.CODE_39,ZX.BarcodeFormat.DATA_MATRIX,
+        ZX.BarcodeFormat.ITF,ZX.BarcodeFormat.UPC_A,ZX.BarcodeFormat.UPC_E,
       ]);
-      hints.set(ZX.DecodeHintType.TRY_HARDER, true);
-      const reader = new ZX.MultiFormatReader();
+      hints.set(ZX.DecodeHintType.TRY_HARDER,true);
+      const reader=new ZX.MultiFormatReader();
       reader.setHints(hints);
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d', {willReadFrequently:true});
+      // Salva riferimento per uso in foto-upload
+      zxReader={ZX,reader};
 
-      // Dimensione target canvas: max 640px sul lato lungo (ZXing fatica con risoluzioni alte)
-      const MAX_SIDE = 640;
+      const canvas=$('cam-canvas');
+      const ctx=canvas.getContext('2d',{willReadFrequently:true});
+      // ZXing funziona meglio con immagini tra 400-700px
+      const scale=Math.min(640/Math.max(vw,vh),1);
+      const cw=Math.round(vw*scale), ch=Math.round(vh*scale);
+      canvas.width=cw; canvas.height=ch;
 
-      let lastTry2 = 0;
-      const tick2 = () => {
-        if(!scanning) return;
-        frameCount++;
-        const now = Date.now();
-        if(now - lastTry2 >= 120 && video.readyState >= 2 && video.videoWidth > 0){
-          lastTry2 = now;
+      st('Punta il barcode nel riquadro verde…');
+      db(`${vw}x${vh}→${cw}x${ch} | ZXing`);
 
-          // Scala il canvas mantenendo l'aspect ratio — evita il problema 1080x1920
-          const vw = video.videoWidth, vh = video.videoHeight;
-          const scale = Math.min(MAX_SIDE / Math.max(vw, vh), 1);
-          const cw = Math.round(vw * scale);
-          const ch = Math.round(vh * scale);
-          canvas.width  = cw;
-          canvas.height = ch;
-          ctx.drawImage(video, 0, 0, cw, ch);
-
-          try{
-            const img = ctx.getImageData(0, 0, cw, ch);
-            const lum = new ZX.RGBLuminanceSource(img.data, cw, ch);
-            const bmp = new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum));
-            const result = reader.decode(bmp);
-            if(result){ scanning=false; close(); callback(result.getText()); return; }
-          } catch{}
-
-          // Tentativo secondario: crop centrale 50% (dove di solito è il barcode)
-          try{
-            const cx = Math.round(cw * 0.25), cy = Math.round(ch * 0.25);
-            const cw2 = Math.round(cw * 0.5), ch2 = Math.round(ch * 0.5);
-            const img2 = ctx.getImageData(cx, cy, cw2, ch2);
-            const lum2 = new ZX.RGBLuminanceSource(img2.data, cw2, ch2);
-            const bmp2 = new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum2));
-            const result2 = reader.decode(bmp2);
-            if(result2){ scanning=false; close(); callback(result2.getText()); return; }
-          } catch{}
-
-          if(frameCount % 15 === 0) setDebug(`ZXing | frame ${frameCount} | ${cw}x${ch} (scala ${Math.round(scale*100)}%)`);
-        }
-        if(scanning) requestAnimationFrame(tick2);
+      const tryZX=(data,w,h)=>{
+        try{
+          const lum=new ZX.RGBLuminanceSource(data,w,h);
+          const bmp=new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum));
+          return reader.decode(bmp).getText();
+        }catch{ return null; }
       };
-      requestAnimationFrame(tick2);
 
-    } catch(e){
-      let msg = '⚠️ Fotocamera non disponibile.';
-      if(e.name==='NotAllowedError'||e.name==='PermissionDeniedError')
-        msg='⚠️ Permesso fotocamera negato. Controlla le impostazioni del browser.';
-      else if(e.name==='NotFoundError')
-        msg='⚠️ Nessuna fotocamera trovata su questo dispositivo.';
-      else if(e.message)
-        msg='⚠️ '+e.message;
-      setStatus(msg);
-      setDebug(e.name||'');
+      let last=0, n=0;
+      const tick=()=>{
+        if(!active) return;
+        const now=Date.now();
+        if(now-last>=80 && video.readyState>=2){
+          last=now; n++;
+          ctx.drawImage(video,0,0,cw,ch);
+          // 1. Frame intero
+          let r=tryZX(ctx.getImageData(0,0,cw,ch).data,cw,ch);
+          // 2. Crop centrale 70%
+          if(!r){
+            const x=Math.round(cw*.15),y=Math.round(ch*.15);
+            const w2=Math.round(cw*.7),h2=Math.round(ch*.7);
+            if(w2>20&&h2>20) r=tryZX(ctx.getImageData(x,y,w2,h2).data,w2,h2);
+          }
+          // 3. Crop banda orizzontale centrale (ottimale per EAN)
+          if(!r){
+            const y3=Math.round(ch*.3),h3=Math.round(ch*.4);
+            if(h3>10) r=tryZX(ctx.getImageData(0,y3,cw,h3).data,cw,h3);
+          }
+          if(r){ done(r); return; }
+          if(n%20===0) db(`${cw}x${ch} | ZXing | frame ${n}`);
+        }
+        if(active) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+
+    }catch(e){
+      let msg='⚠️ Fotocamera non disponibile.';
+      if(e.name==='NotAllowedError') msg='⚠️ Permesso negato → Impostazioni → Safari → Fotocamera → Consenti';
+      else if(e.name==='NotFoundError') msg='⚠️ Nessuna fotocamera trovata.';
+      else if(e.message) msg='⚠️ '+e.message;
+      st(msg); db(e.name||'');
+      // In caso di errore fotocamera, switcha automaticamente su tab foto
+      camSwitchTab('foto');
     }
   })();
 }
