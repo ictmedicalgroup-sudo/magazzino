@@ -1,0 +1,1179 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Medical Group · Gestione Magazzino</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Raleway:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Raleway','Segoe UI',sans-serif;background:#f4f5f4;color:#2c2e2f;min-height:100vh;}
+:root{
+  --verde:#9DBF60;--verde-scuro:#7a9e44;--verde-chiaro:#D5E3B7;--verde-pale:#eef4e3;
+  --grigio:#77797A;--grigio-scuro:#4a4c4d;--grigio-chiaro:#c8c9ca;--grigio-sfondo:#f4f5f4;
+  --bianco:#ffffff;--rosso:#c0392b;--rosso-chiaro:#fdf0ee;
+  --arancio:#e67e22;--arancio-chiaro:#fef5ec;
+  --testo:#2c2e2f;--bordo:#e2e4e2;
+}
+::-webkit-scrollbar{width:4px;height:4px;}
+::-webkit-scrollbar-thumb{background:var(--grigio-chiaro);border-radius:3px;}
+input,select{font-family:inherit;}
+input:focus,select:focus{outline:none;border-color:var(--verde)!important;box-shadow:0 0 0 3px #9DBF6022;}
+@keyframes slideUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+@keyframes spin{to{transform:rotate(360deg);}}
+.spinner{width:18px;height:18px;border:2px solid #ffffff44;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:middle;margin-right:8px;}
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+// CONFIG SUPABASE
+// ════════════════════════════════════════════════════════════════
+const SUPA_URL = 'https://iczsdqcnvauopwkuspti.supabase.co';
+const SUPA_KEY = 'sb_publishable_vijGmY6ZHzPiJ0XhGSLgug_Hqpzym5V';
+
+const headers = {
+  'Content-Type': 'application/json',
+  'apikey': SUPA_KEY,
+  'Authorization': `Bearer ${SUPA_KEY}`,
+  'Prefer': 'return=representation'
+};
+
+// ── Supabase REST helpers ─────────────────────────────────────
+const db = {
+  async select(table, params=''){
+    const r = await fetch(`${SUPA_URL}/rest/v1/${table}?${params}`, {headers});
+    if(!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async insert(table, data){
+    const r = await fetch(`${SUPA_URL}/rest/v1/${table}`, {
+      method:'POST', headers, body: JSON.stringify(data)
+    });
+    if(!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async update(table, data, filter){
+    const r = await fetch(`${SUPA_URL}/rest/v1/${table}?${filter}`, {
+      method:'PATCH', headers, body: JSON.stringify(data)
+    });
+    if(!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async delete(table, filter){
+    const r = await fetch(`${SUPA_URL}/rest/v1/${table}?${filter}`, {
+      method:'DELETE', headers
+    });
+    if(!r.ok) throw new Error(await r.text());
+  }
+};
+
+// ── Helpers ───────────────────────────────────────────────────
+const uid    = () => Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,10);
+const nowStr = () => new Date().toLocaleString('it-IT');
+const fmt    = n  => Number(n).toLocaleString('it-IT');
+const fmtData= iso => iso ? iso.split('-').reverse().join('/') : '—';
+
+async function sha256(str){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+function exportCSV(rows, cols, filename){
+  const h = cols.map(c=>c.label).join(';');
+  const b = rows.map(r=>cols.map(c=>`"${r[c.key]??''}`).join(';')).join('\n');
+  const blob = new Blob(['\uFEFF'+h+'\n'+b],{type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+}
+
+// ── State ─────────────────────────────────────────────────────
+let state = {
+  phase: 'loading',   // loading|setup|login|app
+  utente: null,
+  articoli: [],
+  movimenti: [],
+  logEntries: [],
+  utenti: [],
+  tab: 'Giacenze',
+  modal: null,
+  toast: null,
+  syncing: false,
+  isMobile: window.innerWidth < 700,
+};
+
+window.addEventListener('resize', ()=>{ state.isMobile = window.innerWidth < 700; render(); });
+
+// ── Giacenze calcolate ────────────────────────────────────────
+function calcGiacenze(){
+  const g = {};
+  state.articoli.forEach(a=>{ g[a.id]={art:a, pezzi:0}; });
+  state.movimenti.forEach(m=>{
+    if(!g[m.articolo_id]) return;
+    g[m.articolo_id].pezzi += m.tipo==='carico' ? m.quantita : -m.quantita;
+  });
+  return g;
+}
+
+// ════════════════════════════════════════════════════════════════
+// DATA LOADING
+// ════════════════════════════════════════════════════════════════
+async function loadAll(){
+  const [articoli, movimenti, utenti, log] = await Promise.all([
+    db.select('articoli','order=codice.asc'),
+    db.select('movimenti','order=data.desc'),
+    db.select('utenti','order=created_at.asc'),
+    db.select('log_accessi','order=data.desc&limit=500'),
+  ]);
+  state.articoli   = articoli;
+  state.movimenti  = movimenti;
+  state.utenti     = utenti;
+  state.logEntries = log;
+  render();
+}
+
+async function init(){
+  try {
+    const utenti = await db.select('utenti','limit=1');
+    if(!utenti.length){ state.phase='setup'; render(); return; }
+    state.phase='login'; render();
+  } catch(e){
+    showToast('Errore connessione database: '+e.message,'error');
+    state.phase='login'; render();
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// ACTIONS
+// ════════════════════════════════════════════════════════════════
+async function doSetup(nome,username,pass){
+  const hash = await sha256(pass);
+  const u = {id:uid(),username:username.toLowerCase().trim(),password_hash:hash,
+    nome_completo:nome.trim(),ruolo:'admin',attivo:true,created_at:nowStr()};
+  await db.insert('utenti',u);
+  state.utente = u; state.phase='app';
+  await loadAll();
+}
+
+async function doLogin(username,pass){
+  const utenti = await db.select('utenti',`username=eq.${username.toLowerCase().trim()}`);
+  const u = utenti[0];
+  if(!u||!u.attivo) throw new Error('Utente non trovato o disabilitato.');
+  const hash = await sha256(pass);
+  if(hash!==u.password_hash) throw new Error('Password errata.');
+  await db.insert('log_accessi',{id:uid(),tipo:'login',utente:u.username,nome_completo:u.nome_completo,data:nowStr()});
+  state.utente=u; state.phase='app';
+  await loadAll();
+}
+
+async function doLogout(){
+  await db.insert('log_accessi',{id:uid(),tipo:'logout',utente:state.utente.username,nome_completo:state.utente.nome_completo,data:nowStr()});
+  state.utente=null; state.phase='login'; state.tab='Giacenze';
+  render();
+}
+
+async function doCarico(m){
+  const mov = {id:uid(),articolo_id:m.articoloId,tipo:'carico',quantita:m.quantita,
+    causale:m.causale,scadenza:m.scadenza||null,note:m.note||null,
+    is_scatola:m.isScatola||false,n_scatole:m.nScatole||null,
+    utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr()};
+  await db.insert('movimenti',mov);
+  await db.insert('log_accessi',{id:uid(),tipo:'carico',utente:state.utente.username,
+    nome_completo:state.utente.nome_completo,articolo_id:m.articoloId,
+    quantita:m.quantita,causale:m.causale,data:nowStr()});
+  await loadAll();
+}
+
+async function doScarico(m){
+  const mov = {id:uid(),articolo_id:m.articoloId,tipo:'scarico',quantita:m.quantita,
+    causale:m.causale,scadenza:m.scadenza||null,note:m.note||null,
+    is_scatola:m.isScatola||false,n_scatole:m.nScatole||null,
+    utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr()};
+  await db.insert('movimenti',mov);
+  await db.insert('log_accessi',{id:uid(),tipo:'scarico',utente:state.utente.username,
+    nome_completo:state.utente.nome_completo,articolo_id:m.articoloId,
+    quantita:m.quantita,causale:m.causale,data:nowStr()});
+  await loadAll();
+}
+
+async function saveArticolo(art, isNew){
+  const row = {id:art.id||uid(),codice:art.codice,barcode:art.barcode||null,
+    nome:art.nome,um:art.um,pezzi_scatola:art.pezziScatola||null,
+    scorta_min:art.scortaMin||null,created_at:art.created_at||nowStr()};
+  if(isNew) await db.insert('articoli',row);
+  else await db.update('articoli',row,`id=eq.${row.id}`);
+  await loadAll();
+}
+
+async function deleteArticolo(id){
+  await db.delete('movimenti',`articolo_id=eq.${id}`);
+  await db.delete('articoli',`id=eq.${id}`);
+  await loadAll();
+}
+
+async function saveUtente(u, isNew){
+  if(isNew) await db.insert('utenti',{...u,id:uid(),attivo:true,created_at:nowStr()});
+  else await db.update('utenti',u,`id=eq.${u.id}`);
+  await loadAll();
+}
+
+// ════════════════════════════════════════════════════════════════
+// TOAST
+// ════════════════════════════════════════════════════════════════
+function showToast(msg,type='ok'){
+  state.toast={msg,type};
+  render();
+  setTimeout(()=>{ state.toast=null; render(); },3000);
+}
+
+// ════════════════════════════════════════════════════════════════
+// BARCODE SCANNER (lettore fisico)
+// ════════════════════════════════════════════════════════════════
+let _bcBuf='', _bcLast=0;
+document.addEventListener('keydown', e=>{
+  if(state.phase!=='app'||state.modal) return;
+  const el=document.activeElement;
+  if(el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT')) return;
+  const now=Date.now();
+  if(now-_bcLast>120) _bcBuf='';
+  _bcLast=now;
+  if(e.key==='Enter'&&_bcBuf.length>=3){
+    const art=findArtByBarcode(_bcBuf.trim());
+    if(art) openModal({type:'quick_scan',art});
+    else showToast('Barcode non trovato: '+_bcBuf.trim(),'error');
+    _bcBuf=''; return;
+  }
+  if(e.key.length===1) _bcBuf+=e.key;
+});
+
+function findArtByBarcode(code){
+  return state.articoli.find(a=>
+    a.codice.toLowerCase()===code.toLowerCase()||
+    (a.barcode&&a.barcode.toLowerCase()===code.toLowerCase())
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// MODAL MANAGER
+// ════════════════════════════════════════════════════════════════
+function openModal(m){ state.modal=m; render(); }
+function closeModal(){ state.modal=null; render(); }
+
+// ════════════════════════════════════════════════════════════════
+// RENDER ENGINE (vanilla DOM)
+// ════════════════════════════════════════════════════════════════
+function render(){
+  const app = document.getElementById('app');
+  if(state.phase==='loading'){ app.innerHTML=loadingHTML(); return; }
+  if(state.phase==='setup'){   app.innerHTML=setupHTML();   bindSetup(); return; }
+  if(state.phase==='login'){   app.innerHTML=loginHTML();   bindLogin(); return; }
+  app.innerHTML=mainHTML();
+  bindMain();
+}
+
+// ── Loading ───────────────────────────────────────────────────
+function loadingHTML(){ return `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:var(--grigio);font-size:14px;letter-spacing:2px;">Connessione al database…</div>`; }
+
+// ── Logo SVG ──────────────────────────────────────────────────
+function logoSVG(small){
+  const w=small?28:36,h=small?22:28;
+  return `<svg width="${w}" height="${h}" viewBox="0 0 90 70" fill="none">
+    <circle cx="28" cy="22" r="19" stroke="#D5E3B7" stroke-width="3.5" fill="none"/>
+    <circle cx="40" cy="38" r="24" stroke="#77797A" stroke-width="3.5" fill="none"/>
+  </svg>`;
+}
+function logoHTML(small=false){ return `
+  <div style="display:flex;align-items:center;gap:${small?6:10}px;">
+    ${logoSVG(small)}
+    <div style="line-height:1.15;">
+      <div style="font-weight:300;font-size:${small?11:14}px;letter-spacing:4px;text-transform:uppercase;">
+        <span style="color:var(--grigio);">MEDICAL</span><span style="color:var(--verde);">GROUP</span>
+      </div>
+      ${!small?'<div style="font-size:9px;letter-spacing:2px;color:var(--grigio-chiaro);text-transform:uppercase;font-weight:500;">Gestione Magazzino</div>':''}
+    </div>
+  </div>`; }
+
+// ── Auth card wrapper ─────────────────────────────────────────
+function authCard(content){ return `
+  <div style="min-height:100vh;background:var(--grigio-sfondo);display:flex;align-items:center;justify-content:center;padding:16px;">
+    <div style="background:#fff;border-radius:16px;padding:36px;max-width:420px;width:100%;box-shadow:0 8px 40px #0000001a;border:1px solid var(--bordo);">
+      ${content}
+    </div>
+  </div>`; }
+
+// ── Setup ─────────────────────────────────────────────────────
+function setupHTML(){ return authCard(`
+  <div style="text-align:center;margin-bottom:28px;">${logoHTML()}<div style="margin-top:20px;font-weight:700;font-size:17px;">Configurazione iniziale</div><div style="font-size:13px;color:var(--grigio);margin-top:6px;">Crea l'account amministratore</div></div>
+  <div style="display:flex;flex-direction:column;gap:14px;">
+    ${inp('setup-nome','Nome completo','','text',true)}
+    ${inp('setup-user','Username','es. mrossi','text',true)}
+    ${inp('setup-pass','Password','minimo 6 caratteri','password',true)}
+    ${inp('setup-pass2','Conferma password','','password',true)}
+    <div id="setup-err"></div>
+    <button id="setup-btn" style="${btnStyle('primary',false,true)}">Crea account admin</button>
+  </div>`); }
+
+function bindSetup(){
+  document.getElementById('setup-btn').onclick = async () => {
+    const nome=val('setup-nome'),user=val('setup-user'),pass=val('setup-pass'),pass2=val('setup-pass2');
+    const err=document.getElementById('setup-err');
+    err.innerHTML='';
+    if(!nome||!user||!pass){ err.innerHTML=errBox('Tutti i campi sono obbligatori.'); return; }
+    if(pass.length<6){ err.innerHTML=errBox('Password minimo 6 caratteri.'); return; }
+    if(pass!==pass2){ err.innerHTML=errBox('Le password non coincidono.'); return; }
+    setLoading('setup-btn',true);
+    try{ await doSetup(nome,user,pass); }
+    catch(e){ err.innerHTML=errBox(e.message); setLoading('setup-btn',false); }
+  };
+}
+
+// ── Login ─────────────────────────────────────────────────────
+function loginHTML(){ return authCard(`
+  <div style="text-align:center;margin-bottom:28px;">${logoHTML()}<div style="margin-top:20px;font-size:13px;color:var(--grigio);">Accesso riservato al personale autorizzato</div></div>
+  <div style="display:flex;flex-direction:column;gap:14px;">
+    ${inp('login-user','Username','','text',true)}
+    ${inp('login-pass','Password','','password',true)}
+    <div id="login-err"></div>
+    <button id="login-btn" style="${btnStyle('primary',false,true)}" >Accedi</button>
+  </div>
+  <div style="text-align:center;margin-top:20px;font-size:11px;color:var(--grigio-chiaro);">Medical Group · Gestione Magazzino</div>`); }
+
+function bindLogin(){
+  const go = async () => {
+    const err=document.getElementById('login-err');
+    err.innerHTML='';
+    setLoading('login-btn',true);
+    try{ await doLogin(val('login-user'),val('login-pass')); }
+    catch(e){ err.innerHTML=errBox(e.message); setLoading('login-btn',false); }
+  };
+  document.getElementById('login-btn').onclick=go;
+  document.getElementById('login-pass').addEventListener('keydown',e=>{ if(e.key==='Enter') go(); });
+}
+
+// ── Main App ──────────────────────────────────────────────────
+const TABS_USER  = ['Giacenze','Movimenti'];
+const TABS_ADMIN = ['Giacenze','Movimenti','Articoli','Scadenze','Utenti','Log'];
+const CAUSALI_CARICO  = ['Acquisto','Ricezione da altra sede'];
+const CAUSALI_SCARICO = ['Uso','Reso','Scadenza','Invio ad altra sede'];
+
+function mainHTML(){
+  const isAdmin = state.utente?.ruolo==='admin';
+  const TABS = isAdmin ? TABS_ADMIN : TABS_USER;
+  const giacenze = calcGiacenze();
+  const alertList = Object.values(giacenze).filter(g=>g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min);
+  const mob = state.isMobile;
+
+  const tabsHTML = TABS.map(t=>`
+    <button class="tab-btn" data-tab="${t}" style="background:none;border:none;border-bottom:${t===state.tab?'2px solid var(--verde)':'2px solid transparent'};color:${t===state.tab?'var(--verde)':'var(--grigio)'};cursor:pointer;font-family:inherit;font-weight:600;font-size:${mob?10:12}px;letter-spacing:1.2px;padding:${mob?'10px 12px 8px':'14px 22px 12px'};text-transform:uppercase;white-space:nowrap;flex-shrink:0;">${t}</button>
+  `).join('');
+
+  let content='';
+  if(state.tab==='Giacenze')  content=renderGiacenze(giacenze,alertList);
+  else if(state.tab==='Movimenti') content=renderMovimenti();
+  else if(state.tab==='Articoli'&&isAdmin)  content=renderArticoli(giacenze);
+  else if(state.tab==='Scadenze'&&isAdmin)  content=renderScadenze();
+  else if(state.tab==='Utenti'&&isAdmin)    content=renderUtenti();
+  else if(state.tab==='Log'&&isAdmin)       content=renderLog();
+
+  const stats = [
+    {label:'Articoli',     val:state.articoli.length,  sub:'in anagrafica',  accent:'var(--verde)'},
+    {label:'Sotto scorta', val:alertList.length,        sub:'in alert',       accent:alertList.length>0?'var(--rosso)':'var(--verde)'},
+    {label:'Carichi',      val:state.movimenti.filter(m=>m.tipo==='carico').length,  sub:'totali', accent:'var(--verde)'},
+    {label:'Scarichi',     val:state.movimenti.filter(m=>m.tipo==='scarico').length, sub:'totali', accent:'var(--grigio)'},
+  ].map(s=>`
+    <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;padding:14px 18px;min-width:110px;flex:1;border-top:3px solid ${s.accent};flex-shrink:0;">
+      <div style="font-size:9px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">${s.label}</div>
+      <div style="font-size:24px;font-weight:700;line-height:1;">${s.val}</div>
+      <div style="font-size:10px;color:var(--grigio-chiaro);margin-top:2px;">${s.sub}</div>
+    </div>`).join('');
+
+  const alertBanner = alertList.length>0&&state.tab==='Giacenze' ? `
+    <div style="background:var(--rosso-chiaro);border:1px solid #c0392b33;border-radius:8px;padding:12px 16px;margin-bottom:18px;display:flex;gap:10px;align-items:flex-start;">
+      <span style="font-size:18px;">⚠️</span>
+      <div>
+        <div style="font-weight:700;color:var(--rosso);font-size:13px;margin-bottom:4px;">Articoli sotto scorta minima</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12px;color:var(--grigio-scuro);">
+          ${alertList.map(g=>`<span><b>${g.art.codice}</b> ${g.art.nome}: <span style="color:var(--rosso);font-weight:700;">${fmt(g.pezzi)} ${g.art.um}</span><span style="color:var(--grigio-chiaro);"> / min.${fmt(g.art.scorta_min)}</span></span>`).join('')}
+        </div>
+      </div>
+    </div>` : '';
+
+  const modalHTML = state.modal ? renderModal(giacenze) : '';
+  const toastHTML = state.toast ? `<div style="position:fixed;bottom:${mob?80:24}px;right:${mob?12:24}px;background:${state.toast.type==='ok'?'var(--verde)':'var(--rosso)'};color:#fff;font-weight:700;font-size:12px;padding:12px 20px;border-radius:8px;box-shadow:0 8px 32px #0000002a;z-index:9999;animation:slideUp .25s ease;">${state.toast.msg}</div>` : '';
+
+  const fabHTML = mob ? `
+    <div style="position:fixed;bottom:20px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:200;">
+      <button onclick="openModal({type:'scarico',preselectId:null})" style="width:52px;height:52px;border-radius:50%;background:var(--rosso);color:#fff;border:none;font-size:22px;cursor:pointer;box-shadow:0 4px 16px #c0392b44;">−</button>
+      <button onclick="openModal({type:'carico',preselectId:null})"  style="width:52px;height:52px;border-radius:50%;background:var(--verde);color:#fff;border:none;font-size:22px;cursor:pointer;box-shadow:0 4px 16px #9DBF6044;">+</button>
+    </div>` : '';
+
+  return `
+    <div style="min-height:100vh;background:var(--grigio-sfondo);">
+      <!-- HEADER -->
+      <div style="background:#fff;border-bottom:1px solid var(--bordo);box-shadow:0 1px 6px #0000000a;position:sticky;top:0;z-index:100;">
+        <div style="max-width:1140px;margin:0 auto;padding:0 16px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;height:${mob?54:64}px;">
+            ${logoHTML(mob)}
+            <div style="display:flex;align-items:center;gap:8px;">
+              ${state.syncing?'<span style="font-size:10px;color:var(--verde);font-weight:700;">●</span>':''}
+              ${alertList.length>0?`<div onclick="setTab('Giacenze')" style="background:var(--rosso-chiaro);border:1px solid #c0392b33;border-radius:20px;padding:3px 10px;font-size:10px;color:var(--rosso);font-weight:700;cursor:pointer;">⚠ ${alertList.length}</div>`:''}
+              ${!mob?`<button onclick="openModal({type:'carico',preselectId:null})" style="${btnStyle('outline',true)}">↑ Carico</button><button onclick="openModal({type:'scarico',preselectId:null})" style="${btnStyle('primary',true)}">↓ Scarico</button>`:''}
+              ${!mob?`<span style="font-size:11px;color:var(--grigio);font-weight:600;">${state.utente?.nome_completo}</span>`:''}
+              <button onclick="doLogout()" style="background:none;border:1px solid var(--bordo);color:var(--grigio);cursor:pointer;font-size:11px;font-weight:600;padding:4px 8px;border-radius:4px;font-family:inherit;">Esci</button>
+            </div>
+          </div>
+          <div style="display:flex;overflow-x:auto;scrollbar-width:none;">${tabsHTML}</div>
+        </div>
+      </div>
+      <!-- CONTENT -->
+      <div style="max-width:1140px;margin:0 auto;padding:${mob?'16px 12px':'28px 24px'};padding-bottom:${mob?100:28}px;">
+        <div style="display:flex;gap:12px;margin-bottom:20px;overflow-x:auto;scrollbar-width:none;">${stats}</div>
+        ${alertBanner}
+        ${content}
+      </div>
+      ${fabHTML}
+      ${modalHTML}
+      ${toastHTML}
+    </div>`;
+}
+
+function setTab(t){ state.tab=t; render(); }
+
+function bindMain(){
+  document.querySelectorAll('.tab-btn').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: GIACENZE
+// ════════════════════════════════════════════════════════════════
+function renderGiacenze(giacenze,alertList){
+  const search=(window._giacSearch||'').toLowerCase();
+  const filtro=window._giacFiltro||'tutti';
+  const rows=Object.values(giacenze).filter(g=>{
+    const m=!search||g.art.codice.toLowerCase().includes(search)||g.art.nome.toLowerCase().includes(search)||(g.art.barcode&&g.art.barcode.toLowerCase().includes(search));
+    const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
+    if(filtro==='alert'&&!sotto) return false;
+    if(filtro==='ok'&&sotto)     return false;
+    return m;
+  });
+
+  const pillFiltro=(v,l)=>{
+    const bg=filtro===v?'var(--verde)':'#fff';
+    const cl=filtro===v?'#fff':'var(--grigio)';
+    const bd=filtro===v?'var(--verde)':'var(--bordo)';
+    return `<button onclick="window._giacFiltro='${v}';render();" style="padding:7px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;background:${bg};color:${cl};border:1px solid ${bd};">${l}</button>`;
+  };
+
+  const rowsHTML = state.isMobile
+    ? rows.map(g=>mobileGiacenzaCard(g)).join('')
+    : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+            ${['Codice','Barcode','Descrizione','U.M.','Giacenza','Pz/Sc','Scorta min.','Stato',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${rows.map(g=>desktopGiacenzaRow(g)).join('')}</tbody>
+        </table>
+      </div>`;
+
+  return `
+    <div>
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end;">
+        <div style="position:relative;flex:1;min-width:200px;max-width:300px;">
+          <input id="giac-search" value="${window._giacSearch||''}" placeholder="🔍  Cerca o scansiona barcode…"
+            oninput="window._giacSearch=this.value;render();"
+            style="${inpStyle()} padding-right:40px;">
+          <button onclick="openCameraFor('giac-search',v=>{window._giacSearch=v;render();})" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:var(--verde-pale);border:1px solid var(--verde-chiaro);border-radius:4px;padding:4px 8px;cursor:pointer;font-size:15px;">📷</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${pillFiltro('tutti','Tutti')}${pillFiltro('alert','⚠ Alert')}${pillFiltro('ok','✓ OK')}
+        </div>
+        <button onclick="exportGiacenze()" style="${btnStyle('ghost',true)};margin-left:auto;">⬇ CSV</button>
+      </div>
+      ${rows.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun articolo trovato.</div>':rowsHTML}
+    </div>`;
+}
+
+function mobileGiacenzaCard(g){
+  const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
+  return `<div style="background:#fff;border:1px solid ${sotto?'var(--rosso)':'var(--bordo)'};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+      <div>${pill(g.art.codice,'var(--grigio)')}<div style="font-weight:600;font-size:14px;margin-top:6px;">${g.art.nome}</div></div>
+      <div style="text-align:right;"><div style="font-weight:700;font-size:22px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</div><div style="font-size:11px;color:var(--grigio);">${g.art.um}</div></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
+      <div>${g.art.scorta_min!=null?(sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')):''}</div>
+      <div style="display:flex;gap:8px;">
+        <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
+        <button onclick="openModal({type:'scarico',preselectId:'${g.art.id}'})" style="${btnStyle('ghost',true)}">↓</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function desktopGiacenzaRow(g){
+  const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
+  const pzSc=g.art.pezzi_scatola&&g.pezzi>0?`<span style="color:var(--grigio-chiaro);font-size:10px;margin-left:6px;">(${Math.floor(g.pezzi/g.art.pezzi_scatola)}sc+${g.pezzi%g.art.pezzi_scatola})</span>`:'';
+  return `<tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+    <td style="padding:11px 14px;">${pill(g.art.codice,'var(--grigio)')}</td>
+    <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${g.art.barcode||'—'}</td>
+    <td style="padding:11px 14px;font-weight:600;">${g.art.nome}</td>
+    <td style="padding:11px 14px;color:var(--grigio);">${g.art.um}</td>
+    <td style="padding:11px 14px;"><span style="font-weight:700;font-size:15px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</span>${pzSc}</td>
+    <td style="padding:11px 14px;color:var(--grigio);">${g.art.pezzi_scatola||'—'}</td>
+    <td style="padding:11px 14px;color:var(--grigio);">${g.art.scorta_min!=null?fmt(g.art.scorta_min):'—'}</td>
+    <td style="padding:11px 14px;">${g.art.scorta_min==null?'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>':sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')}</td>
+    <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+      <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
+      <button onclick="openModal({type:'scarico',preselectId:'${g.art.id}'})" style="${btnStyle('ghost',true)}">↓</button>
+    </div></td>
+  </tr>`;
+}
+
+function exportGiacenze(){
+  const giacenze=calcGiacenze();
+  exportCSV(Object.values(giacenze).map(g=>({
+    codice:g.art.codice,nome:g.art.nome,barcode:g.art.barcode||'',um:g.art.um,
+    pezzi:g.pezzi,pz_sc:g.art.pezzi_scatola||'',scorta_min:g.art.scorta_min||'',
+    stato:g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min?'SOTTO SCORTA':'Regolare'
+  })),[
+    {key:'codice',label:'Codice'},{key:'nome',label:'Descrizione'},{key:'barcode',label:'Barcode'},
+    {key:'um',label:'U.M.'},{key:'pezzi',label:'Giacenza'},{key:'pz_sc',label:'Pz/Sc'},
+    {key:'scorta_min',label:'Scorta min.'},{key:'stato',label:'Stato'}
+  ],'giacenze.csv');
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: MOVIMENTI
+// ════════════════════════════════════════════════════════════════
+function renderMovimenti(){
+  const search=(window._movSearch||'').toLowerCase();
+  const filtroT=window._movFiltro||'';
+  const artMap=Object.fromEntries(state.articoli.map(a=>[a.id,a]));
+  const rows=state.movimenti.filter(m=>{
+    const a=artMap[m.articolo_id];
+    const match=!search||a?.codice?.toLowerCase().includes(search)||a?.nome?.toLowerCase().includes(search)||m.causale?.toLowerCase().includes(search)||m.nome_utente?.toLowerCase().includes(search);
+    return match&&(!filtroT||m.tipo===filtroT);
+  });
+  const rowsHTML = state.isMobile
+    ? rows.map(m=>{ const a=artMap[m.articolo_id]; return `
+        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;padding:12px 14px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            ${pill(m.tipo,m.tipo==='carico'?'var(--verde)':'var(--rosso)')}
+            <span style="font-size:11px;color:var(--grigio);">${m.data}</span>
+          </div>
+          <div style="font-weight:600;font-size:13px;">${a?.nome||'?'}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+            <span style="font-weight:700;font-size:16px;color:${m.tipo==='carico'?'var(--verde-scuro)':'var(--rosso)'};">${m.tipo==='carico'?'+':'−'}${fmt(m.quantita)} ${a?.um||''}</span>
+            <span style="font-size:11px;color:var(--grigio);">${m.nome_utente||m.utente||''}</span>
+          </div>
+          <div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;">
+            ${m.causale?`<span style="font-size:11px;color:var(--grigio);">${m.causale}</span>`:''}
+            ${m.scadenza?`<span style="font-size:11px;color:var(--grigio);">Scad. <b>${fmtData(m.scadenza)}</b></span>`:''}
+          </div>
+        </div>`;}).join('')
+    : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+            ${['Data/Ora','Tipo','Utente','Articolo','Quantità','Causale','Scadenza','Note'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${rows.map(m=>{ const a=artMap[m.articolo_id]; return `
+            <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+              <td style="padding:10px 14px;color:var(--grigio);font-size:11px;white-space:nowrap;">${m.data}</td>
+              <td style="padding:10px 14px;">${pill(m.tipo,m.tipo==='carico'?'var(--verde)':'var(--rosso)')}</td>
+              <td style="padding:10px 14px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">${m.nome_utente||m.utente||'—'}</td>
+              <td style="padding:10px 14px;"><span style="color:var(--verde);font-size:11px;margin-right:6px;">${a?.codice||'?'}</span><span style="font-weight:600;">${a?.nome||'?'}</span></td>
+              <td style="padding:10px 14px;"><span style="font-weight:700;color:${m.tipo==='carico'?'var(--verde-scuro)':'var(--rosso)'};">${m.tipo==='carico'?'+':'−'}${fmt(m.quantita)}</span><span style="color:var(--grigio-chiaro);font-size:11px;margin-left:4px;">${a?.um||''}</span></td>
+              <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${m.causale||'—'}</td>
+              <td style="padding:10px 14px;font-size:12px;font-weight:${m.scadenza?600:400};color:${m.scadenza?'var(--testo)':'var(--grigio-chiaro)'};">${fmtData(m.scadenza)}</td>
+              <td style="padding:10px 14px;color:var(--grigio);font-size:11px;">${m.note||'—'}</td>
+            </tr>`;}).join('')}</tbody>
+        </table>
+      </div>`;
+
+  return `
+    <div>
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end;">
+        <input placeholder="🔍  Cerca…" value="${window._movSearch||''}" oninput="window._movSearch=this.value;render();" style="${inpStyle()};max-width:260px;">
+        <select onchange="window._movFiltro=this.value;render();" style="${inpStyle()};max-width:180px;">
+          <option value="" ${!filtroT?'selected':''}>Tutti i movimenti</option>
+          <option value="carico" ${filtroT==='carico'?'selected':''}>Solo carichi</option>
+          <option value="scarico" ${filtroT==='scarico'?'selected':''}>Solo scarichi</option>
+        </select>
+        <button onclick="exportMovimenti()" style="${btnStyle('ghost',true)};margin-left:auto;">⬇ CSV</button>
+      </div>
+      ${rows.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun movimento trovato.</div>':rowsHTML}
+    </div>`;
+}
+
+function exportMovimenti(){
+  const artMap=Object.fromEntries(state.articoli.map(a=>[a.id,a]));
+  exportCSV(state.movimenti.map(m=>{ const a=artMap[m.articolo_id]; return {
+    data:m.data,tipo:m.tipo.toUpperCase(),utente:m.nome_utente||m.utente||'',
+    codice:a?.codice||'?',nome:a?.nome||'?',quantita:m.quantita,
+    causale:m.causale||'',scadenza:fmtData(m.scadenza),note:m.note||''
+  }; }),[
+    {key:'data',label:'Data/Ora'},{key:'tipo',label:'Tipo'},{key:'utente',label:'Utente'},
+    {key:'codice',label:'Codice'},{key:'nome',label:'Descrizione'},{key:'quantita',label:'Qtà (pz)'},
+    {key:'causale',label:'Causale'},{key:'scadenza',label:'Scadenza'},{key:'note',label:'Note'}
+  ],'movimenti.csv');
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: ARTICOLI
+// ════════════════════════════════════════════════════════════════
+function renderArticoli(giacenze){
+  const rows=state.articoli.map(a=>{ const g=giacenze[a.id]; const sotto=a.scorta_min!=null&&(g?.pezzi??0)<=a.scorta_min; return `
+    <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+      <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
+      <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
+      <td style="padding:11px 14px;font-weight:600;">${a.nome}</td>
+      <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
+      <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
+      <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
+      <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)} ${a.um}</span></td>
+      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+        <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
+        <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
+      </div></td>
+    </tr>`; }).join('');
+  return `
+    <div>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+        <button onclick="openModal({type:'nuovo_art'})" style="${btnStyle('primary',false)}">+ Nuovo articolo</button>
+      </div>
+      ${state.articoli.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun articolo. Aggiungine uno per iniziare.</div>':`
+        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+              ${['Codice','Barcode','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`}
+    </div>`;
+}
+
+function confirmDeleteArt(id){
+  const g=calcGiacenze();
+  if(g[id]?.pezzi!==0){ showToast('Impossibile eliminare: giacenza non zero.','error'); return; }
+  if(!confirm('Eliminare definitivamente questo articolo e tutti i suoi movimenti?')) return;
+  deleteArticolo(id).then(()=>showToast('Articolo eliminato.')).catch(e=>showToast(e.message,'error'));
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: SCADENZE
+// ════════════════════════════════════════════════════════════════
+function renderScadenze(){
+  const artMap=Object.fromEntries(state.articoli.map(a=>[a.id,a]));
+  const today=new Date(); today.setHours(0,0,0,0);
+  const lotti=state.movimenti.filter(m=>m.tipo==='carico'&&m.scadenza)
+    .map(m=>({...m,art:artMap[m.articolo_id]})).filter(l=>l.art)
+    .sort((a,b)=>a.scadenza.localeCompare(b.scadenza));
+  if(!lotti.length) return '<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessuna scadenza registrata. Le scadenze vengono tracciate al momento del carico.</div>';
+  const gruppi={};
+  lotti.forEach(l=>{ if(!gruppi[l.scadenza]) gruppi[l.scadenza]=[]; gruppi[l.scadenza].push(l); });
+  const statoSc=iso=>{ const d=new Date(iso); d.setHours(0,0,0,0); const diff=Math.round((d-today)/86400000);
+    if(diff<0)   return {label:'SCADUTO',   color:'var(--rosso)',  bg:'var(--rosso-chiaro)'};
+    if(diff<=30) return {label:`tra ${diff}gg`, color:'var(--arancio)',bg:'var(--arancio-chiaro)'};
+    return              {label:`tra ${diff}gg`, color:'var(--verde)', bg:'var(--verde-pale)'}; };
+  return `<div><div style="font-size:11px;color:var(--grigio);margin-bottom:16px;">${lotti.length} lotti · ordinati per data di scadenza</div>
+    <div style="display:flex;flex-direction:column;gap:16px;">
+    ${Object.entries(gruppi).map(([data,items])=>{ const s=statoSc(data); return `
+      <div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+          <div style="font-weight:700;font-size:14px;">${fmtData(data)}</div>
+          <div style="background:${s.bg};color:${s.color};border:1px solid ${s.color}44;border-radius:20px;font-size:10px;font-weight:700;padding:2px 10px;letter-spacing:.8px;">${s.label}</div>
+          <div style="flex:1;height:1px;background:var(--bordo);"></div>
+        </div>
+        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+              ${['Codice','Descrizione','U.M.','Qtà caricata','Caricato il','Da'].map(h=>`<th style="text-align:left;padding:8px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+            </tr></thead>
+            <tbody>${items.map(l=>`
+              <tr style="border-bottom:1px solid var(--bordo);background:${s.label==='SCADUTO'?'var(--rosso-chiaro)':'transparent'};">
+                <td style="padding:9px 14px;">${pill(l.art.codice,'var(--grigio)')}</td>
+                <td style="padding:9px 14px;font-weight:600;">${l.art.nome}</td>
+                <td style="padding:9px 14px;color:var(--grigio);">${l.art.um}</td>
+                <td style="padding:9px 14px;font-weight:700;">${fmt(l.quantita)}</td>
+                <td style="padding:9px 14px;color:var(--grigio);font-size:11px;">${l.data}</td>
+                <td style="padding:9px 14px;color:var(--grigio);font-size:12px;">${l.nome_utente||l.utente||'—'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`; }).join('')}
+    </div></div>`;
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: UTENTI
+// ════════════════════════════════════════════════════════════════
+function renderUtenti(){
+  const rows=state.utenti.map(u=>`
+    <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+      <td style="padding:11px 14px;font-weight:600;">${u.nome_completo}</td>
+      <td style="padding:11px 14px;color:var(--grigio);font-family:monospace;font-size:12px;">@${u.username}</td>
+      <td style="padding:11px 14px;">${pill(u.ruolo,u.ruolo==='admin'?'var(--verde)':'var(--grigio)')}</td>
+      <td style="padding:11px 14px;">${pill(u.attivo?'Attivo':'Disabilitato',u.attivo?'var(--verde)':'var(--rosso)')}</td>
+      <td style="padding:11px 14px;color:var(--grigio);font-size:11px;">${u.created_at}</td>
+      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+        <button onclick="openModal({type:'reset_pass',userId:'${u.id}',userName:${JSON.stringify(u.nome_completo)}})" style="${btnStyle('ghost',true)}">Reset pw</button>
+        ${u.id!==state.utente?.id?`<button onclick="toggleUtente('${u.id}',${u.attivo})" style="${btnStyle(u.attivo?'danger':'outline',true)}">${u.attivo?'Disabilita':'Riabilita'}</button>`:''}
+      </div></td>
+    </tr>`).join('');
+  return `
+    <div>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+        <button onclick="openModal({type:'nuovo_utente'})" style="${btnStyle('primary',false)}">+ Nuovo utente</button>
+      </div>
+      <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+            ${['Nome','Username','Ruolo','Stato','Creato il','Azioni'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function toggleUtente(id,attivo){
+  await db.update('utenti',{attivo:!attivo},`id=eq.${id}`);
+  await loadAll(); showToast('Utente aggiornato.');
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: LOG
+// ════════════════════════════════════════════════════════════════
+function renderLog(){
+  const search=(window._logSearch||'').toLowerCase();
+  const dal=window._logDal||''; const al=window._logAl||'';
+  const PER_PAG=10;
+  if(!window._logPag) window._logPag=1;
+  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password'};
+  const COLOR={login:'var(--verde)',logout:'var(--grigio)',carico:'var(--verde)',scarico:'var(--rosso)',crea_utente:'var(--arancio)',reset_password:'var(--arancio)'};
+  const parseD=str=>{ if(!str) return null; const [dp]=str.split(','); const [d,m,y]=dp.trim().split('/'); return new Date(`${y}-${m}-${d}`); };
+  const dalD=dal?new Date(dal):null;
+  const alD =al ?new Date(al) :null; if(alD) alD.setHours(23,59,59);
+  const filtered=state.logEntries.filter(e=>{
+    const q=search; const m=!q||e.nome_completo?.toLowerCase().includes(q)||e.utente?.toLowerCase().includes(q)||(LABEL[e.tipo]||e.tipo).toLowerCase().includes(q);
+    const d=parseD(e.data); const ok=((!dalD||!d||d>=dalD)&&(!alD||!d||d<=alD));
+    return m&&ok;
+  });
+  const totP=Math.max(1,Math.ceil(filtered.length/PER_PAG));
+  const pag=Math.min(window._logPag,totP);
+  const rows=filtered.slice((pag-1)*PER_PAG,pag*PER_PAG);
+  const pagBtn=(p,label,dis)=>`<button onclick="window._logPag=${p};render();" ${dis?'disabled':''} style="padding:6px 10px;border-radius:6px;border:1px solid ${dis?'var(--bordo)':'var(--bordo)'};background:transparent;color:${dis?'var(--grigio-chiaro)':'var(--grigio)'};cursor:${dis?'not-allowed':'pointer'};font-family:inherit;font-size:12px;">${label}</button>`;
+  const pageNums=Array.from({length:totP},(_,i)=>i+1).filter(p=>p===1||p===totP||Math.abs(p-pag)<=1)
+    .reduce((acc,p,i,arr)=>{ if(i>0&&p-arr[i-1]>1) acc.push('…'); acc.push(p); return acc; },[])
+    .map(p=>p==='…'?`<span style="color:var(--grigio);padding:0 4px;">…</span>`:`<button onclick="window._logPag=${p};render();" style="width:32px;height:32px;border-radius:6px;border:1px solid ${p===pag?'var(--verde)':'var(--bordo)'};background:${p===pag?'var(--verde)':'transparent'};color:${p===pag?'#fff':'var(--grigio)'};cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;">${p}</button>`).join('');
+  return `
+    <div>
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end;">
+        <input placeholder="🔍  Cerca utente o tipo…" value="${window._logSearch||''}" oninput="window._logSearch=this.value;window._logPag=1;render();" style="${inpStyle()};max-width:220px;">
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--grigio-scuro);font-weight:600;">Dal<input type="date" value="${dal}" onchange="window._logDal=this.value;window._logPag=1;render();" style="${inpStyle()};max-width:150px;padding:8px 10px;"></div>
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--grigio-scuro);font-weight:600;">Al<input type="date" value="${al}" onchange="window._logAl=this.value;window._logPag=1;render();" style="${inpStyle()};max-width:150px;padding:8px 10px;"></div>
+        ${(dal||al||search)?`<button onclick="window._logSearch='';window._logDal='';window._logAl='';window._logPag=1;render();" style="${btnStyle('ghost',true)}">✕ Reset</button>`:''}
+        <button onclick="exportLog()" style="${btnStyle('ghost',true)};margin-left:auto;">⬇ CSV</button>
+      </div>
+      <div style="font-size:11px;color:var(--grigio);margin-bottom:10px;">${filtered.length} risultati — pagina ${pag} di ${totP}</div>
+      ${rows.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun accesso registrato.</div>':`
+        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+              ${['Data/Ora','Utente','Tipo','Dettaglio'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+            </tr></thead>
+            <tbody>${rows.map(e=>`
+              <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+                <td style="padding:10px 14px;color:var(--grigio);font-size:11px;white-space:nowrap;">${e.data}</td>
+                <td style="padding:10px 14px;"><div style="font-weight:600;font-size:13px;">${e.nome_completo||'—'}</div><div style="font-size:11px;color:var(--grigio);">@${e.utente||''}</div></td>
+                <td style="padding:10px 14px;">${pill(LABEL[e.tipo]||e.tipo,COLOR[e.tipo]||'var(--grigio)')}</td>
+                <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${e.causale||e.target_user||'—'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${totP>1?`<div style="display:flex;justify-content:center;align-items:center;gap:6px;margin-top:16px;">${pagBtn(1,'«',pag<=1)}${pagBtn(pag-1,'‹',pag<=1)}${pageNums}${pagBtn(pag+1,'›',pag>=totP)}${pagBtn(totP,'»',pag>=totP)}</div>`:''}
+      `}
+    </div>`;
+}
+
+function exportLog(){
+  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password'};
+  exportCSV(state.logEntries.map(e=>({data:e.data,utente:e.nome_completo||e.utente,tipo:LABEL[e.tipo]||e.tipo,dettaglio:e.causale||e.target_user||''})),
+    [{key:'data',label:'Data/Ora'},{key:'utente',label:'Utente'},{key:'tipo',label:'Tipo'},{key:'dettaglio',label:'Dettaglio'}],'log_accessi.csv');
+}
+
+// ════════════════════════════════════════════════════════════════
+// MODALS
+// ════════════════════════════════════════════════════════════════
+function renderModal(giacenze){
+  const m=state.modal;
+  let html='';
+  if(m.type==='quick_scan') html=quickScanModal(m.art,giacenze);
+  else if(m.type==='carico'||m.type==='scarico') html=movimentoModal(m.type,m.preselectId,giacenze);
+  else if(m.type==='nuovo_art'||m.type==='edit_art') html=articoloModal(m.art);
+  else if(m.type==='nuovo_utente') html=nuovoUtenteModal();
+  else if(m.type==='reset_pass') html=resetPassModal(m.userId,m.userName);
+  return `<div onclick="if(event.target===this)closeModal();" style="position:fixed;inset:0;background:#2c2e2f88;backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:998;padding:16px;">
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:480px;padding:24px;box-shadow:0 24px 80px #0000002a;border:1px solid var(--bordo);max-height:92vh;overflow-y:auto;">
+      ${html}
+    </div>
+  </div>`;
+}
+
+function modalHeader(title,color){
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+    <div style="display:flex;align-items:center;gap:10px;">
+      ${color?`<div style="width:8px;height:8px;border-radius:50%;background:${color};"></div>`:''}
+      <span style="font-weight:700;font-size:15px;">${title}</span>
+    </div>
+    <button onclick="closeModal();" style="background:var(--grigio-sfondo);border:none;color:var(--grigio);cursor:pointer;font-size:18px;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;">×</button>
+  </div>`;
+}
+
+// Quick scan
+function quickScanModal(art,giacenze){
+  const g=giacenze[art.id]; const sotto=art.scorta_min!=null&&(g?.pezzi??0)<=art.scorta_min;
+  return `${modalHeader('Articolo rilevato')}
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      <div style="background:var(--grigio-sfondo);border-radius:8px;padding:16px 18px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div>${pill(art.codice,'var(--grigio)')}<div style="font-weight:700;font-size:16px;margin-top:8px;">${art.nome}</div>${art.barcode?`<div style="font-size:11px;color:var(--grigio);margin-top:4px;font-family:monospace;">${art.barcode}</div>`:''}</div>
+          <div style="text-align:right;"><div style="font-size:28px;font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)}</div><div style="font-size:11px;color:var(--grigio);">${art.um}</div></div>
+        </div>
+        ${sotto?`<div style="margin-top:10px;">${pill('⚠ Sotto scorta (min. '+fmt(art.scorta_min)+')','var(--rosso)')}</div>`:''}
+      </div>
+      <div style="display:flex;gap:10px;">
+        <button onclick="closeModal();setTimeout(()=>openModal({type:'carico',preselectId:'${art.id}'}),50);" style="${btnStyle('outline',false,true)}">↑ Carico</button>
+        <button onclick="closeModal();setTimeout(()=>openModal({type:'scarico',preselectId:'${art.id}'}),50);" style="background:var(--rosso);color:#fff;border:none;border-radius:6px;padding:10px 22px;cursor:pointer;font-family:inherit;font-weight:600;font-size:13px;flex:1;">↓ Scarico</button>
+      </div>
+      <button onclick="closeModal();" style="${btnStyle('ghost',false,true)}">Chiudi</button>
+    </div>`;
+}
+
+// Movimento
+function movimentoModal(tipo,preselectId,giacenze){
+  const ac=tipo==='carico'?'var(--verde)':'var(--rosso)';
+  const causali=tipo==='carico'?CAUSALI_CARICO:CAUSALI_SCARICO;
+  const selArt=preselectId?state.articoli.find(a=>a.id===preselectId):null;
+  const artOpts=state.articoli.map(a=>`<option value="${a.id}" ${preselectId===a.id?'selected':''}>${a.codice} — ${a.nome}</option>`).join('');
+  const causOpts=causali.map((c,i)=>`<option value="${c}" ${i===0?'selected':''}>${c}</option>`).join('');
+  const infoBar=selArt?(() =>{ const g=giacenze[selArt.id]; return `<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${selArt.nome}</span><span>Giacenza: <b style="color:var(--testo);">${fmt(g?.pezzi??0)} ${selArt.um}</b></span>${selArt.pezzi_scatola?`<span>Pz/sc: <b style="color:var(--testo);">${selArt.pezzi_scatola}</b></span>`:''} ${selArt.scorta_min!=null?`<span>Min: <b style="color:${(g?.pezzi??0)<=selArt.scorta_min?'var(--rosso)':'var(--testo)'};">${fmt(selArt.scorta_min)}</b></span>`:''}</div>`; })():'';
+  return `${modalHeader(tipo==='carico'?'Registra carico':'Registra scarico',ac)}
+    <div style="display:flex;flex-direction:column;gap:14px;" id="mov-form">
+      <div style="position:relative;">
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
+          Cerca per barcode o codice
+          <div style="display:flex;gap:8px;">
+            <input id="mov-bc" placeholder="Scansiona o digita…" style="${inpStyle()};flex:1;" oninput="movBarcodeInput(this.value);">
+            <button type="button" onclick="openCameraFor('mov-bc',v=>{document.getElementById('mov-bc').value=v;movBarcodeInput(v);})" style="background:var(--verde-pale);border:1.5px solid var(--verde-chiaro);border-radius:6px;padding:0 14px;cursor:pointer;font-size:18px;">📷</button>
+          </div>
+        </label>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Oppure seleziona dalla lista <span style="color:var(--verde);">*</span>
+        <select id="mov-art" onchange="movArtChange()" style="${inpStyle()}"><option value="">— seleziona —</option>${artOpts}</select>
+      </label>
+      <div id="mov-info">${infoBar}</div>
+      <div id="mov-sc-toggle"></div>
+      <div id="mov-qty-wrap">
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Quantità <span style="color:var(--verde);">*</span>
+          <input type="number" id="mov-qty" min="1" style="${inpStyle()}">
+        </label>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Causale <span style="color:var(--verde);">*</span>
+        <select id="mov-causale" style="${inpStyle()}">${causOpts}</select>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Data di scadenza <span style="color:var(--verde);">*</span>
+        <input type="date" id="mov-scad" style="${inpStyle()}">
+      </label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Note
+        <input type="text" id="mov-note" style="${inpStyle()}">
+      </label>
+      <div id="mov-err"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
+        <button onclick="submitMovimento('${tipo}','${ac}');" style="background:${ac};color:#fff;border:none;border-radius:6px;padding:10px 22px;cursor:pointer;font-family:inherit;font-weight:600;font-size:13px;box-shadow:0 2px 8px ${ac}44;">Conferma ${tipo}</button>
+      </div>
+    </div>`;
+}
+
+function movBarcodeInput(v){
+  const art=findArtByBarcode(v);
+  if(art){ document.getElementById('mov-art').value=art.id; movArtChange(); document.getElementById('mov-bc').value=''; }
+}
+
+function movArtChange(){
+  const id=document.getElementById('mov-art')?.value;
+  const art=state.articoli.find(a=>a.id===id);
+  const g=calcGiacenze();
+  const infoEl=document.getElementById('mov-info');
+  const scEl=document.getElementById('mov-sc-toggle');
+  if(!art||!infoEl) return;
+  const gv=g[art.id]?.pezzi??0;
+  infoEl.innerHTML=`<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${art.nome}</span><span>Giacenza: <b style="color:var(--testo);">${fmt(gv)} ${art.um}</b></span>${art.pezzi_scatola?`<span>Pz/sc: <b style="color:var(--testo);">${art.pezzi_scatola}</b></span>`:''}</div>`;
+  if(art.pezzi_scatola&&scEl){
+    scEl.innerHTML=`<div style="display:flex;gap:8px;">
+      <button id="sc-pz" onclick="setModalita('pezzi','${art.id}')" style="flex:1;padding:9px;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;border:1.5px solid var(--verde);background:var(--verde)11;color:var(--verde);">Pezzi singoli</button>
+      <button id="sc-sc" onclick="setModalita('scatole','${art.id}')" style="flex:1;padding:9px;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;border:1.5px solid var(--bordo);background:#fff;color:var(--grigio);">Scatole intere</button>
+    </div>`;
+  }
+}
+
+function setModalita(m,artId){
+  const art=state.articoli.find(a=>a.id===artId);
+  const wrap=document.getElementById('mov-qty-wrap');
+  if(!wrap||!art) return;
+  if(m==='scatole'){
+    wrap.innerHTML=`<div style="display:flex;flex-direction:column;gap:8px;"><label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Numero di scatole <span style="color:var(--verde);">*</span><input type="number" id="mov-qty" min="1" oninput="document.getElementById('mov-qty-info')&&(document.getElementById('mov-qty-info').textContent='= '+(parseInt(this.value)||0)*${art.pezzi_scatola}+' ${art.um} totali')" style="${inpStyle()}"></label><div id="mov-qty-info" style="font-size:11px;color:var(--verde);font-weight:600;"></div></div>`;
+    document.getElementById('sc-pz').style.cssText+='background:#fff;color:var(--grigio);border-color:var(--bordo);';
+    document.getElementById('sc-sc').style.cssText+='background:var(--verde)11;color:var(--verde);border-color:var(--verde);';
+  } else {
+    wrap.innerHTML=`<label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Quantità (${art.um}) <span style="color:var(--verde);">*</span><input type="number" id="mov-qty" min="1" style="${inpStyle()}"></label>`;
+    document.getElementById('sc-pz').style.cssText+='background:var(--verde)11;color:var(--verde);border-color:var(--verde);';
+    document.getElementById('sc-sc').style.cssText+='background:#fff;color:var(--grigio);border-color:var(--bordo);';
+  }
+  window._movModalita=m;
+}
+
+async function submitMovimento(tipo){
+  const errEl=document.getElementById('mov-err'); errEl.innerHTML='';
+  const artId=document.getElementById('mov-art')?.value;
+  const art=state.articoli.find(a=>a.id===artId);
+  const qtyEl=document.getElementById('mov-qty');
+  const scad=document.getElementById('mov-scad')?.value;
+  const causale=document.getElementById('mov-causale')?.value;
+  const note=document.getElementById('mov-note')?.value;
+  if(!artId){ errEl.innerHTML=errBox('Seleziona un articolo.'); return; }
+  const modalita=window._movModalita||'pezzi';
+  let qty=parseInt(qtyEl?.value)||0;
+  if(modalita==='scatole') qty=qty*(art?.pezzi_scatola||0);
+  if(qty<=0){ errEl.innerHTML=errBox('Inserisci una quantità valida.'); return; }
+  if(!scad){ errEl.innerHTML=errBox('Inserisci la data di scadenza.'); return; }
+  if(tipo==='scarico'){
+    const g=calcGiacenze(); const gv=g[artId]?.pezzi??0;
+    if(qty>gv){ errEl.innerHTML=errBox(`Disponibili: ${fmt(gv)} ${art?.um}.`); return; }
+  }
+  const btn=document.querySelector('#mov-form button:last-child');
+  if(btn){ btn.innerHTML='<span class="spinner"></span>Salvataggio…'; btn.disabled=true; }
+  try{
+    const fn=tipo==='carico'?doCarico:doScarico;
+    await fn({articoloId:artId,quantita:qty,causale,scadenza:scad,note,
+      isScatola:modalita==='scatole',nScatole:modalita==='scatole'?parseInt(qtyEl?.value):null});
+    closeModal(); showToast(`${tipo==='carico'?'Carico':'Scarico'} registrato.`);
+    window._movModalita='pezzi';
+  } catch(e){ errEl.innerHTML=errBox(e.message); if(btn){btn.innerHTML=`Conferma ${tipo}`;btn.disabled=false;} }
+}
+
+// Articolo
+function articoloModal(art){
+  const isEdit=!!art;
+  return `${modalHeader(isEdit?'Modifica articolo':'Nuovo articolo')}
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Codice interno <span style="color:var(--verde);">*</span><input id="art-codice" value="${art?.codice||''}" placeholder="es. ART001" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Barcode / EAN (opzionale)
+        <div style="display:flex;gap:8px;">
+          <input id="art-barcode" value="${art?.barcode||''}" placeholder="Scansiona o digita il barcode" style="${inpStyle()};flex:1;">
+          <button onclick="openCameraFor('art-barcode',v=>{document.getElementById('art-barcode').value=v;})" style="background:var(--verde-pale);border:1.5px solid var(--verde-chiaro);border-radius:6px;padding:0 14px;cursor:pointer;font-size:18px;">📷</button>
+        </div>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Descrizione <span style="color:var(--verde);">*</span><input id="art-nome" value="${art?.nome||''}" placeholder="es. Guanti nitrile M" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Unità di misura
+        <select id="art-um" style="${inpStyle()}">
+          ${['pz','conf','kg','g','l','ml','m'].map(u=>`<option value="${u}" ${(art?.um||'pz')===u?'selected':''}>${u}</option>`).join('')}
+        </select>
+      </label>
+      <div style="border-top:1px solid var(--bordo);padding-top:14px;display:flex;flex-direction:column;gap:12px;">
+        <div style="font-size:10px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;">Scatola &amp; Scorta</div>
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Pezzi per scatola (opzionale)<input type="number" id="art-pzsc" min="1" value="${art?.pezzi_scatola||''}" placeholder="es. 100" style="${inpStyle()}"></label>
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Scorta minima (opzionale)<input type="number" id="art-scmin" min="0" value="${art?.scorta_min||''}" placeholder="es. 50" style="${inpStyle()}"></label>
+      </div>
+      <div id="art-err"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
+        <button onclick="submitArticolo(${isEdit?`'${art.id}'`:'null'})" style="${btnStyle('primary',false)}">${isEdit?'Salva modifiche':'Crea articolo'}</button>
+      </div>
+    </div>`;
+}
+
+async function submitArticolo(existingId){
+  const errEl=document.getElementById('art-err'); errEl.innerHTML='';
+  const codice=document.getElementById('art-codice').value.trim().toUpperCase();
+  const nome=document.getElementById('art-nome').value.trim();
+  if(!codice||!nome){ errEl.innerHTML=errBox('Codice e descrizione obbligatori.'); return; }
+  const dup=state.articoli.find(a=>a.codice===codice&&a.id!==existingId);
+  if(dup){ errEl.innerHTML=errBox('Codice già esistente.'); return; }
+  const art={
+    id:existingId||uid(), codice,
+    barcode:document.getElementById('art-barcode').value.trim()||null,
+    nome, um:document.getElementById('art-um').value,
+    pezzi_scatola:parseInt(document.getElementById('art-pzsc').value)||null,
+    scorta_min:parseInt(document.getElementById('art-scmin').value)||null,
+    created_at:nowStr()
+  };
+  try{ await saveArticolo(art,!existingId); closeModal(); showToast(existingId?'Articolo aggiornato.':'Articolo creato.'); }
+  catch(e){ errEl.innerHTML=errBox(e.message); }
+}
+
+// Nuovo utente
+function nuovoUtenteModal(){
+  return `${modalHeader('Nuovo utente')}
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Nome completo <span style="color:var(--verde);">*</span><input id="nu-nome" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Username <span style="color:var(--verde);">*</span><input id="nu-user" placeholder="es. mrossi" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Password temporanea <span style="color:var(--verde);">*</span><input type="password" id="nu-pass" placeholder="minimo 6 caratteri" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Ruolo
+        <select id="nu-ruolo" style="${inpStyle()}"><option value="operatore">Operatore (solo carico/scarico)</option><option value="admin">Amministratore (accesso completo)</option></select>
+      </label>
+      <div id="nu-err"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
+        <button onclick="submitNuovoUtente()" style="${btnStyle('primary',false)}">Crea utente</button>
+      </div>
+    </div>`;
+}
+
+async function submitNuovoUtente(){
+  const errEl=document.getElementById('nu-err'); errEl.innerHTML='';
+  const nome=document.getElementById('nu-nome').value.trim();
+  const user=document.getElementById('nu-user').value.trim().toLowerCase();
+  const pass=document.getElementById('nu-pass').value;
+  const ruolo=document.getElementById('nu-ruolo').value;
+  if(!nome||!user||!pass){ errEl.innerHTML=errBox('Tutti i campi sono obbligatori.'); return; }
+  if(pass.length<6){ errEl.innerHTML=errBox('Password minimo 6 caratteri.'); return; }
+  if(state.utenti.find(u=>u.username===user)){ errEl.innerHTML=errBox('Username già esistente.'); return; }
+  const hash=await sha256(pass);
+  try{ await saveUtente({username:user,password_hash:hash,nome_completo:nome,ruolo},true); closeModal(); showToast('Utente creato.'); }
+  catch(e){ errEl.innerHTML=errBox(e.message); }
+}
+
+// Reset password
+function resetPassModal(userId,userName){
+  return `${modalHeader(`Reset password — ${userName}`)}
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Nuova password <span style="color:var(--verde);">*</span><input type="password" id="rp-pass" placeholder="minimo 6 caratteri" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Conferma password <span style="color:var(--verde);">*</span><input type="password" id="rp-pass2" style="${inpStyle()}"></label>
+      <div id="rp-err"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
+        <button onclick="submitResetPass('${userId}')" style="${btnStyle('primary',false)}">Aggiorna password</button>
+      </div>
+    </div>`;
+}
+
+async function submitResetPass(userId){
+  const errEl=document.getElementById('rp-err'); errEl.innerHTML='';
+  const pass=document.getElementById('rp-pass').value;
+  const pass2=document.getElementById('rp-pass2').value;
+  if(!pass){ errEl.innerHTML=errBox('Inserisci la nuova password.'); return; }
+  if(pass.length<6){ errEl.innerHTML=errBox('Minimo 6 caratteri.'); return; }
+  if(pass!==pass2){ errEl.innerHTML=errBox('Le password non coincidono.'); return; }
+  const hash=await sha256(pass);
+  try{
+    await db.update('utenti',{password_hash:hash},`id=eq.${userId}`);
+    await db.insert('log_accessi',{id:uid(),tipo:'reset_password',utente:state.utente.username,nome_completo:state.utente.nome_completo,target_user:userId,data:nowStr()});
+    await loadAll(); closeModal(); showToast('Password aggiornata.');
+  } catch(e){ errEl.innerHTML=errBox(e.message); }
+}
+
+// ════════════════════════════════════════════════════════════════
+// CAMERA SCANNER
+// ════════════════════════════════════════════════════════════════
+function openCameraFor(inputId, callback){
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:#000000ee;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000;padding:16px;';
+  overlay.innerHTML=`
+    <div style="background:#fff;border-radius:12px;overflow:hidden;width:100%;max-width:480px;box-shadow:0 24px 80px #000;">
+      <div style="background:#2c2e2f;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="color:#fff;font-weight:700;font-size:14px;">📷 Scansione barcode</span>
+        <button id="cam-close" style="background:none;border:none;color:#fff;cursor:pointer;font-size:20px;">×</button>
+      </div>
+      <div style="position:relative;background:#000;">
+        <video id="cam-video" autoplay playsinline muted style="width:100%;max-height:320px;display:block;object-fit:cover;"></video>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
+          <div style="width:220px;height:120px;border:2px solid var(--verde);border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,.45);"></div>
+        </div>
+      </div>
+      <div id="cam-status" style="padding:12px 16px;text-align:center;font-size:12px;color:var(--grigio);">Avvio fotocamera…</div>
+      <div style="padding:0 16px 16px;display:flex;justify-content:center;">
+        <button id="cam-cancel" style="${btnStyle('ghost',false)}">Annulla</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  let stream=null, scanning=true;
+  const close=()=>{ scanning=false; if(stream) stream.getTracks().forEach(t=>t.stop()); overlay.remove(); };
+  overlay.querySelector('#cam-close').onclick=close;
+  overlay.querySelector('#cam-cancel').onclick=close;
+
+  (async()=>{
+    try{
+      if(!window.ZXing){
+        await new Promise((res,rej)=>{
+          const s=document.createElement('script');
+          s.src='https://cdnjs.cloudflare.com/ajax/libs/zxing-js/0.21.3/umd/index.min.js';
+          s.onload=res; s.onerror=()=>rej(new Error('ZXing load failed'));
+          document.head.appendChild(s);
+        });
+      }
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}});
+      const video=overlay.querySelector('#cam-video');
+      video.srcObject=stream;
+      overlay.querySelector('#cam-status').textContent='Punta la fotocamera sul barcode';
+      const ZX=window.ZXing;
+      const hints=new Map();
+      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS,[ZX.BarcodeFormat.EAN_13,ZX.BarcodeFormat.EAN_8,ZX.BarcodeFormat.QR_CODE,ZX.BarcodeFormat.CODE_128,ZX.BarcodeFormat.CODE_39,ZX.BarcodeFormat.DATA_MATRIX,ZX.BarcodeFormat.ITF,ZX.BarcodeFormat.UPC_A]);
+      hints.set(ZX.DecodeHintType.TRY_HARDER,true);
+      const reader=new ZX.MultiFormatReader(); reader.setHints(hints);
+      const canvas=document.createElement('canvas'); const ctx=canvas.getContext('2d');
+      const tick=()=>{
+        if(!scanning) return;
+        if(video.readyState===video.HAVE_ENOUGH_DATA){
+          canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+          ctx.drawImage(video,0,0);
+          try{
+            const img=ctx.getImageData(0,0,canvas.width,canvas.height);
+            const lum=new ZX.RGBLuminanceSource(img.data,canvas.width,canvas.height);
+            const bmp=new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum));
+            const result=reader.decode(bmp);
+            if(result){ scanning=false; close(); callback(result.getText()); return; }
+          } catch{}
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    } catch(e){ overlay.querySelector('#cam-status').textContent='Fotocamera non disponibile: '+e.message; }
+  })();
+}
+
+// ════════════════════════════════════════════════════════════════
+// STYLE HELPERS
+// ════════════════════════════════════════════════════════════════
+function inpStyle(){ return 'background:#fff;border:1.5px solid var(--bordo);border-radius:6px;color:var(--testo);font-family:inherit;font-size:14px;padding:10px 12px;width:100%;'; }
+function btnStyle(variant='primary',small=false,full=false){
+  const V={
+    primary:'background:var(--verde);color:#fff;border:none;box-shadow:0 2px 8px #9DBF6044;',
+    danger:'background:var(--rosso);color:#fff;border:none;',
+    ghost:'background:transparent;color:var(--grigio);border:1px solid var(--bordo);',
+    outline:'background:transparent;color:var(--verde);border:1px solid var(--verde);',
+  };
+  return `${V[variant]||V.primary}border-radius:6px;font-family:inherit;font-weight:600;font-size:${small?11:13}px;padding:${small?'6px 14px':'10px 22px'};cursor:pointer;letter-spacing:.3px;${full?'width:100%;':''}`;
+}
+function pill(text,color='var(--verde)'){ return `<span style="background:${color}22;color:${color};border:1px solid ${color}55;border-radius:20px;font-size:10px;font-weight:700;padding:2px 9px;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">${text}</span>`; }
+function inp(id,label,placeholder,type='text',required=false){ return `<label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">${label}${required?'<span style="color:var(--verde);"> *</span>':''}<input id="${id}" type="${type}" placeholder="${placeholder}" style="${inpStyle()}"></label>`; }
+function val(id){ return document.getElementById(id)?.value||''; }
+function errBox(msg){ return `<div style="background:var(--rosso-chiaro);border:1px solid #c0392b44;border-radius:6px;color:var(--rosso);font-size:12px;padding:10px 14px;margin-top:10px;">${msg}</div>`; }
+function setLoading(btnId,on){ const b=document.getElementById(btnId); if(b){ b.disabled=on; b.innerHTML=on?'<span class="spinner"></span>Caricamento…':b.innerHTML; } }
+
+// ════════════════════════════════════════════════════════════════
+// START
+// ════════════════════════════════════════════════════════════════
+init();
+</script>
+</body>
+</html>
