@@ -1113,15 +1113,20 @@ function openCameraFor(inputId, callback){
 
   (async()=>{
     try{
-      if(!window.ZXing){
-        await new Promise((res,rej)=>{
-          const s=document.createElement('script');
-          s.src='https://cdnjs.cloudflare.com/ajax/libs/zxing-js/0.21.3/umd/index.min.js';
-          s.onload=res; s.onerror=()=>rej(new Error('ZXing load failed'));
-          document.head.appendChild(s);
-        });
-      }
-      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}});
+      // Safari iOS: getUserMedia DEVE essere chiamato prima di qualsiasi await
+      const streamPromise = navigator.mediaDevices.getUserMedia({
+        video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:720} }
+      });
+      // Carica ZXing in parallelo
+      const zxingPromise = window.ZXing
+        ? Promise.resolve()
+        : new Promise((res,rej)=>{
+            const s=document.createElement('script');
+            s.src='https://cdnjs.cloudflare.com/ajax/libs/zxing-js/0.21.3/umd/index.min.js';
+            s.onload=res; s.onerror=()=>rej(new Error('ZXing non caricabile'));
+            document.head.appendChild(s);
+          });
+      [stream] = await Promise.all([streamPromise, zxingPromise]);
       const video=overlay.querySelector('#cam-video');
       video.srcObject=stream;
       overlay.querySelector('#cam-status').textContent='Punta la fotocamera sul barcode';
@@ -1147,7 +1152,12 @@ function openCameraFor(inputId, callback){
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
-    } catch(e){ overlay.querySelector('#cam-status').textContent='Fotocamera non disponibile: '+e.message; }
+    } catch(e){
+      const msg=e.name==='NotAllowedError'
+        ? 'Permesso fotocamera negato. Vai in Impostazioni iPhone → Safari → Fotocamera → Consenti.'
+        : 'Fotocamera non disponibile: '+e.message;
+      overlay.querySelector('#cam-status').textContent=msg;
+    }
   })();
 }
 
