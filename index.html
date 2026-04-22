@@ -856,34 +856,41 @@ function renderScadenze(){
     return              {label:`tra ${diff} gg`, color:'var(--verde)', bg:'var(--verde-pale)'};
   };
 
+  // Unica tabella con colonna "Scadenza" — colonne perfettamente allineate tra i gruppi
+  const thStyle = 'text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;';
+  const allRows = righe.map(l => {
+    const s = statoSc(l.scadenza);
+    return `
+      <tr style="border-bottom:1px solid var(--bordo);background:${s.label==='SCADUTO'?'var(--rosso-chiaro)':'transparent'};"
+        onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+        <td style="padding:10px 14px;white-space:nowrap;">
+          <div style="font-weight:700;font-size:13px;">${fmtData(l.scadenza)}</div>
+          <div style="margin-top:3px;display:inline-block;background:${s.bg};color:${s.color};border:1px solid ${s.color}44;border-radius:20px;font-size:9px;font-weight:700;padding:1px 8px;letter-spacing:.8px;">${s.label}</div>
+        </td>
+        <td style="padding:10px 14px;">${pill(l.art.codice,'var(--grigio)')}</td>
+        <td style="padding:10px 14px;font-weight:600;">${l.art.nome}</td>
+        <td style="padding:10px 14px;color:var(--grigio);">${l.art.um}</td>
+        <td style="padding:10px 14px;font-weight:700;font-size:15px;color:${s.label==='SCADUTO'?'var(--rosso)':'var(--testo)'};">${fmt(l.pezzi)}</td>
+      </tr>`;
+  }).join('');
+
   return `<div>
     <div style="font-size:11px;color:var(--grigio);margin-bottom:16px;">${righe.length} lotti disponibili · ordinati per data di scadenza</div>
-    <div style="display:flex;flex-direction:column;gap:16px;">
-    ${Object.entries(gruppi).map(([data,items])=>{ const s=statoSc(data); return `
-      <div>
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-          <div style="font-weight:700;font-size:14px;">${fmtData(data)}</div>
-          <div style="background:${s.bg};color:${s.color};border:1px solid ${s.color}44;border-radius:20px;font-size:10px;font-weight:700;padding:2px 10px;letter-spacing:.8px;">${s.label}</div>
-          <div style="flex:1;height:1px;background:var(--bordo);"></div>
-        </div>
-        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;">
-          <table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-              ${['Codice','Descrizione','U.M.','Qtà disponibile'].map(h=>`<th style="text-align:left;padding:8px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
-            </tr></thead>
-            <tbody>${items.map(l=>`
-              <tr style="border-bottom:1px solid var(--bordo);background:${s.label==='SCADUTO'?'var(--rosso-chiaro)':'transparent'};"
-                onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">
-                <td style="padding:9px 14px;">${pill(l.art.codice,'var(--grigio)')}</td>
-                <td style="padding:9px 14px;font-weight:600;">${l.art.nome}</td>
-                <td style="padding:9px 14px;color:var(--grigio);">${l.art.um}</td>
-                <td style="padding:9px 14px;font-weight:700;font-size:15px;color:${s.label==='SCADUTO'?'var(--rosso)':'var(--testo)'};">${fmt(l.pezzi)}</td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>`; }).join('')}
-    </div></div>`;
+    <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--bordo);background:var(--grigio-sfondo);">
+            <th style="${thStyle}">Scadenza</th>
+            <th style="${thStyle}">Codice</th>
+            <th style="${thStyle}">Descrizione</th>
+            <th style="${thStyle}">U.M.</th>
+            <th style="${thStyle}">Qtà disponibile</th>
+          </tr>
+        </thead>
+        <tbody>${allRows}</tbody>
+      </table>
+    </div>
+  </div>`;
 }
 
 function renderUtenti(){
@@ -1453,8 +1460,14 @@ function openCameraFor(inputId, callback){
 
   (async()=>{
     try{
+      // Su Safari iOS la fotocamera posteriore può dare 1080x1920 in portrait
+      // ZXing funziona molto meglio sotto 1280px — richiediamo max 1280
       stream = await navigator.mediaDevices.getUserMedia({
-        video:{ facingMode:'environment', width:{ideal:1920}, height:{ideal:1080} }
+        video:{
+          facingMode: 'environment',
+          width:  { ideal: 1280, max: 1280 },
+          height: { ideal: 720,  max: 1280 }
+        }
       });
 
       const video = overlay.querySelector('#cam-video');
@@ -1563,24 +1576,46 @@ function openCameraFor(inputId, callback){
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d', {willReadFrequently:true});
 
+      // Dimensione target canvas: max 640px sul lato lungo (ZXing fatica con risoluzioni alte)
+      const MAX_SIDE = 640;
+
       let lastTry2 = 0;
       const tick2 = () => {
         if(!scanning) return;
         frameCount++;
         const now = Date.now();
-        if(now - lastTry2 >= 150 && video.readyState >= 2 && video.videoWidth > 0){
+        if(now - lastTry2 >= 120 && video.readyState >= 2 && video.videoWidth > 0){
           lastTry2 = now;
-          canvas.width  = video.videoWidth;
-          canvas.height = video.videoHeight;
-          ctx.drawImage(video, 0, 0);
+
+          // Scala il canvas mantenendo l'aspect ratio — evita il problema 1080x1920
+          const vw = video.videoWidth, vh = video.videoHeight;
+          const scale = Math.min(MAX_SIDE / Math.max(vw, vh), 1);
+          const cw = Math.round(vw * scale);
+          const ch = Math.round(vh * scale);
+          canvas.width  = cw;
+          canvas.height = ch;
+          ctx.drawImage(video, 0, 0, cw, ch);
+
           try{
-            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const lum = new ZX.RGBLuminanceSource(img.data, canvas.width, canvas.height);
+            const img = ctx.getImageData(0, 0, cw, ch);
+            const lum = new ZX.RGBLuminanceSource(img.data, cw, ch);
             const bmp = new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum));
             const result = reader.decode(bmp);
             if(result){ scanning=false; close(); callback(result.getText()); return; }
           } catch{}
-          if(frameCount % 20 === 0) setDebug(`ZXing | frame ${frameCount} | ${canvas.width}x${canvas.height}`);
+
+          // Tentativo secondario: crop centrale 50% (dove di solito è il barcode)
+          try{
+            const cx = Math.round(cw * 0.25), cy = Math.round(ch * 0.25);
+            const cw2 = Math.round(cw * 0.5), ch2 = Math.round(ch * 0.5);
+            const img2 = ctx.getImageData(cx, cy, cw2, ch2);
+            const lum2 = new ZX.RGBLuminanceSource(img2.data, cw2, ch2);
+            const bmp2 = new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum2));
+            const result2 = reader.decode(bmp2);
+            if(result2){ scanning=false; close(); callback(result2.getText()); return; }
+          } catch{}
+
+          if(frameCount % 15 === 0) setDebug(`ZXing | frame ${frameCount} | ${cw}x${ch} (scala ${Math.round(scale*100)}%)`);
         }
         if(scanning) requestAnimationFrame(tick2);
       };
