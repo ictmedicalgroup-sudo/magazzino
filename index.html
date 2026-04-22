@@ -1,1516 +1,1525 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Medical Group · Gestione Magazzino</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Raleway:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Raleway','Segoe UI',sans-serif;background:#f4f5f4;color:#2c2e2f;min-height:100vh;}
+:root{
+  --verde:#9DBF60;--verde-scuro:#7a9e44;--verde-chiaro:#D5E3B7;--verde-pale:#eef4e3;
+  --grigio:#77797A;--grigio-scuro:#4a4c4d;--grigio-chiaro:#c8c9ca;--grigio-sfondo:#f4f5f4;
+  --bianco:#ffffff;--rosso:#c0392b;--rosso-chiaro:#fdf0ee;
+  --arancio:#e67e22;--arancio-chiaro:#fef5ec;
+  --testo:#2c2e2f;--bordo:#e2e4e2;
+}
+::-webkit-scrollbar{width:4px;height:4px;}
+::-webkit-scrollbar-thumb{background:var(--grigio-chiaro);border-radius:3px;}
+input,select{font-family:inherit;}
+input:focus,select:focus{outline:none;border-color:var(--verde)!important;box-shadow:0 0 0 3px #9DBF6022;}
+@keyframes slideUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+@keyframes spin{to{transform:rotate(360deg);}}
+.spinner{width:18px;height:18px;border:2px solid #ffffff44;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:middle;margin-right:8px;}
+</style>
+</head>
+<body>
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PALETTE
-// ─────────────────────────────────────────────────────────────────────────────
-const C = {
-  grigio:"#77797A", grigioScuro:"#4a4c4d", grigioChiaro:"#c8c9ca",
-  grigioSfondo:"#f4f5f4", verde:"#9DBF60", verdeScuro:"#7a9e44",
-  verdeChiaro:"#D5E3B7", verdePale:"#eef4e3", bianco:"#ffffff",
-  rosso:"#c0392b", rossoChiaro:"#fdf0ee", arancio:"#e67e22",
-  arancioChiaro:"#fef5ec", testo:"#2c2e2f", testoMuted:"#77797A",
-  bordo:"#e2e4e2", bordoForte:"#c8c9ca",
+<div id="app"></div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+// CONFIG SUPABASE
+// ════════════════════════════════════════════════════════════════
+const SUPA_URL = 'https://iczsdqcnvauopwkuspti.supabase.co';
+const SUPA_KEY = 'sb_publishable_vijGmY6ZHzPiJ0XhGSLgug_Hqpzym5V';
+
+const headers = {
+  'Content-Type': 'application/json',
+  'apikey': SUPA_KEY,
+  'Authorization': `Bearer ${SUPA_KEY}`,
+  'Prefer': 'return=representation'
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-async function sha256(str) {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
-}
-const uid    = () => Math.random().toString(36).slice(2,10);
-const nowStr = () => new Date().toLocaleString("it-IT");
-const fmt    = n  => Number(n).toLocaleString("it-IT");
-
-const KEYS   = { users:"mg_users_v1", db:"mg_wh_v4", log:"mg_log_v1" };
-const EMPTY_DB  = { articoli:[], movimenti:[] };
-const EMPTY_LOG = { entries:[] };
-
-async function sget(k) {
-  try { const r=await window.storage.get(k,true); return r?JSON.parse(r.value):null; } catch { return null; }
-}
-async function sset(k,v) { try { await window.storage.set(k,JSON.stringify(v),true); } catch {} }
-
-function exportCSV(rows,cols,filename) {
-  const h=cols.map(c=>c.label).join(";");
-  const b=rows.map(r=>cols.map(c=>`"${r[c.key]??""}`).join(";")).join("\n");
-  const blob=new Blob(["\uFEFF"+h+"\n"+b],{type:"text/csv;charset=utf-8"});
-  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=filename; a.click();
-}
-
-const useIsMobile = () => {
-  const [mob,setMob]=useState(window.innerWidth<700);
-  useEffect(()=>{ const h=()=>setMob(window.innerWidth<700); window.addEventListener("resize",h); return ()=>window.removeEventListener("resize",h); },[]);
-  return mob;
+// ── Supabase REST helpers ─────────────────────────────────────
+const db = {
+  async select(table, params=''){
+    const r = await fetch(`${SUPA_URL}/rest/v1/${table}?${params}`, {headers});
+    if(!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async insert(table, data){
+    const r = await fetch(`${SUPA_URL}/rest/v1/${table}`, {
+      method:'POST', headers, body: JSON.stringify(data)
+    });
+    if(!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async update(table, data, filter){
+    const r = await fetch(`${SUPA_URL}/rest/v1/${table}?${filter}`, {
+      method:'PATCH', headers, body: JSON.stringify(data)
+    });
+    if(!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async delete(table, filter){
+    const r = await fetch(`${SUPA_URL}/rest/v1/${table}?${filter}`, {
+      method:'DELETE', headers
+    });
+    if(!r.ok) throw new Error(await r.text());
+  }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// BARCODE HOOK — rileva lettori fisici (input rapido < 80ms/char)
-// ─────────────────────────────────────────────────────────────────────────────
-function useBarcodeScanner(onScan, enabled=true) {
-  const buf  = useRef("");
-  const last = useRef(0);
-  useEffect(()=>{
-    if(!enabled) return;
-    const handler = e => {
-      if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.target.tagName==="SELECT") return;
-      const now=Date.now();
-      if(now-last.current>100) buf.current="";
-      last.current=now;
-      if(e.key==="Enter"&&buf.current.length>=3){
-        onScan(buf.current.trim());
-        buf.current="";
-        return;
-      }
-      if(e.key.length===1) buf.current+=e.key;
-    };
-    window.addEventListener("keydown",handler);
-    return ()=>window.removeEventListener("keydown",handler);
-  },[onScan,enabled]);
+// ── Helpers ───────────────────────────────────────────────────
+const uid    = () => Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,10);
+const nowStr = () => new Date().toLocaleString('it-IT');
+const fmt    = n  => Number(n).toLocaleString('it-IT');
+const fmtData= iso => iso ? iso.split('-').reverse().join('/') : '—';
+
+async function sha256(str){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CAMERA SCANNER MODAL (usa zxing via cdn)
-// ─────────────────────────────────────────────────────────────────────────────
-function CameraScanner({ onScan, onClose }) {
-  const videoRef = useRef(null);
-  const [status, setStatus] = useState("Avvio fotocamera…");
-  const [error,  setError]  = useState("");
-  const readerRef = useRef(null);
-  const streamRef = useRef(null);
+function exportCSV(rows, cols, filename){
+  const h = cols.map(c=>c.label).join(';');
+  const b = rows.map(r=>cols.map(c=>`"${r[c.key]??''}`).join(';')).join('\n');
+  const blob = new Blob(['\uFEFF'+h+'\n'+b],{type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+}
 
-  useEffect(()=>{
-    let mounted=true;
-    const start = async () => {
-      try {
-        // load zxing
-        if(!window.ZXing) {
-          await new Promise((res,rej)=>{
-            const s=document.createElement("script");
-            s.src="https://cdnjs.cloudflare.com/ajax/libs/zxing-js/0.21.3/umd/index.min.js";
-            s.onload=res; s.onerror=()=>rej(new Error("zxing load failed"));
-            document.head.appendChild(s);
-          });
+// ── State ─────────────────────────────────────────────────────
+let state = {
+  phase: 'loading',   // loading|setup|login|app
+  utente: null,
+  articoli: [],
+  movimenti: [],
+  logEntries: [],
+  utenti: [],
+  tab: 'Giacenze',
+  modal: null,
+  toast: null,
+  syncing: false,
+  isMobile: window.innerWidth < 700,
+};
+
+window.addEventListener('resize', ()=>{ state.isMobile = window.innerWidth < 700; render(); });
+
+// ── Giacenze calcolate ────────────────────────────────────────
+function calcGiacenze(){
+  const g = {};
+  state.articoli.forEach(a=>{ g[a.id]={art:a, pezzi:0}; });
+  state.movimenti.forEach(m=>{
+    if(!g[m.articolo_id]) return;
+    g[m.articolo_id].pezzi += m.tipo==='carico' ? m.quantita : -m.quantita;
+  });
+  return g;
+}
+
+// ════════════════════════════════════════════════════════════════
+// DATA LOADING
+// ════════════════════════════════════════════════════════════════
+async function loadAll(){
+  const [articoli, movimenti, utenti, log] = await Promise.all([
+    db.select('articoli','order=codice.asc'),
+    db.select('movimenti','order=data.desc'),
+    db.select('utenti','order=created_at.asc'),
+    db.select('log_accessi','order=data.desc&limit=500'),
+  ]);
+  state.articoli   = articoli;
+  state.movimenti  = movimenti;
+  state.utenti     = utenti;
+  state.logEntries = log;
+  render();
+}
+
+async function init(){
+  try {
+    const utenti = await db.select('utenti','limit=1');
+    if(!utenti.length){ state.phase='setup'; render(); return; }
+    state.phase='login'; render();
+  } catch(e){
+    showToast('Errore connessione database: '+e.message,'error');
+    state.phase='login'; render();
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// ACTIONS
+// ════════════════════════════════════════════════════════════════
+async function doSetup(nome,username,pass){
+  const hash = await sha256(pass);
+  const u = {id:uid(),username:username.toLowerCase().trim(),password_hash:hash,
+    nome_completo:nome.trim(),ruolo:'admin',attivo:true,created_at:nowStr()};
+  await db.insert('utenti',u);
+  state.utente = u; state.phase='app';
+  await loadAll();
+}
+
+async function doLogin(username,pass){
+  const utenti = await db.select('utenti',`username=eq.${username.toLowerCase().trim()}`);
+  const u = utenti[0];
+  if(!u||!u.attivo) throw new Error('Utente non trovato o disabilitato.');
+  const hash = await sha256(pass);
+  if(hash!==u.password_hash) throw new Error('Password errata.');
+  await db.insert('log_accessi',{id:uid(),tipo:'login',utente:u.username,nome_completo:u.nome_completo,data:nowStr()});
+  state.utente=u; state.phase='app';
+  await loadAll();
+}
+
+async function doLogout(){
+  await db.insert('log_accessi',{id:uid(),tipo:'logout',utente:state.utente.username,nome_completo:state.utente.nome_completo,data:nowStr()});
+  state.utente=null; state.phase='login'; state.tab='Giacenze';
+  render();
+}
+
+async function doCarico(m){
+  const mov = {id:uid(),articolo_id:m.articoloId,tipo:'carico',quantita:m.quantita,
+    causale:m.causale,scadenza:m.scadenza||null,note:m.note||null,
+    is_scatola:m.isScatola||false,n_scatole:m.nScatole||null,
+    utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr()};
+  await db.insert('movimenti',mov);
+  await db.insert('log_accessi',{id:uid(),tipo:'carico',utente:state.utente.username,
+    nome_completo:state.utente.nome_completo,articolo_id:m.articoloId,
+    quantita:m.quantita,causale:m.causale,data:nowStr()});
+  await loadAll();
+}
+
+async function doScarico(m){
+  const mov = {id:uid(),articolo_id:m.articoloId,tipo:'scarico',quantita:m.quantita,
+    causale:m.causale,scadenza:m.scadenza||null,note:m.note||null,
+    is_scatola:m.isScatola||false,n_scatole:m.nScatole||null,
+    utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr()};
+  await db.insert('movimenti',mov);
+  await db.insert('log_accessi',{id:uid(),tipo:'scarico',utente:state.utente.username,
+    nome_completo:state.utente.nome_completo,articolo_id:m.articoloId,
+    quantita:m.quantita,causale:m.causale,data:nowStr()});
+  await loadAll();
+}
+
+async function saveArticolo(art, isNew){
+  // Gestione valori numerici: parseInt può restituire NaN, che Supabase rifiuta
+  const toInt = v => { const n=parseInt(v); return (!isNaN(n)&&n>0)?n:null; };
+  const row = {
+    id:           art.id||uid(),
+    codice:       art.codice,
+    barcode:      art.barcode||null,
+    nome:         art.nome,
+    um:           art.um,
+    pezzi_scatola: toInt(art.pezzi_scatola),
+    scorta_min:    toInt(art.scorta_min)!==null ? toInt(art.scorta_min) : (toInt(art.scorta_min)===0?0:null),
+    created_at:   art.created_at||nowStr()
+  };
+  // scorta_min può essere 0, quindi gestiamo separatamente
+  const sm = parseInt(art.scorta_min);
+  row.scorta_min = (!isNaN(sm) && sm>=0) ? sm : null;
+  if(isNew) await db.insert('articoli',row);
+  else await db.update('articoli',row,`id=eq.${row.id}`);
+  await loadAll();
+}
+
+async function deleteArticolo(id){
+  await db.delete('movimenti',`articolo_id=eq.${id}`);
+  await db.delete('articoli',`id=eq.${id}`);
+  await loadAll();
+}
+
+async function saveUtente(u, isNew){
+  if(isNew) await db.insert('utenti',{...u,id:uid(),attivo:true,created_at:nowStr()});
+  else await db.update('utenti',u,`id=eq.${u.id}`);
+  await loadAll();
+}
+
+// ════════════════════════════════════════════════════════════════
+// TOAST
+// ════════════════════════════════════════════════════════════════
+function showToast(msg,type='ok'){
+  state.toast={msg,type};
+  render();
+  setTimeout(()=>{ state.toast=null; render(); },3000);
+}
+
+// ════════════════════════════════════════════════════════════════
+// BARCODE SCANNER (lettore fisico)
+// ════════════════════════════════════════════════════════════════
+let _bcBuf='', _bcLast=0;
+document.addEventListener('keydown', e=>{
+  if(state.phase!=='app'||state.modal) return;
+  const el=document.activeElement;
+  if(el&&(el.tagName==='INPUT'||el.tagName==='TEXTAREA'||el.tagName==='SELECT')) return;
+  const now=Date.now();
+  if(now-_bcLast>120) _bcBuf='';
+  _bcLast=now;
+  if(e.key==='Enter'&&_bcBuf.length>=3){
+    const art=findArtByBarcode(_bcBuf.trim());
+    if(art) openModal({type:'quick_scan',art});
+    else showToast('Barcode non trovato: '+_bcBuf.trim(),'error');
+    _bcBuf=''; return;
+  }
+  if(e.key.length===1) _bcBuf+=e.key;
+});
+
+function findArtByBarcode(code){
+  return state.articoli.find(a=>
+    a.codice.toLowerCase()===code.toLowerCase()||
+    (a.barcode&&a.barcode.toLowerCase()===code.toLowerCase())
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// MODAL MANAGER
+// ════════════════════════════════════════════════════════════════
+function openModal(m){ state.modal=m; render(); }
+function closeModal(){ state.modal=null; render(); }
+
+// ════════════════════════════════════════════════════════════════
+// RENDER ENGINE (vanilla DOM)
+// ════════════════════════════════════════════════════════════════
+function render(){
+  const app = document.getElementById('app');
+  if(state.phase==='loading'){ app.innerHTML=loadingHTML(); return; }
+  if(state.phase==='setup'){   app.innerHTML=setupHTML();   bindSetup(); return; }
+  if(state.phase==='login'){   app.innerHTML=loginHTML();   bindLogin(); return; }
+  app.innerHTML=mainHTML();
+  bindMain();
+}
+
+// ── Loading ───────────────────────────────────────────────────
+function loadingHTML(){ return `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:var(--grigio);font-size:14px;letter-spacing:2px;">Connessione al database…</div>`; }
+
+// ── Logo SVG ──────────────────────────────────────────────────
+function logoSVG(small){
+  const w=small?28:36,h=small?22:28;
+  return `<svg width="${w}" height="${h}" viewBox="0 0 90 70" fill="none">
+    <circle cx="28" cy="22" r="19" stroke="#D5E3B7" stroke-width="3.5" fill="none"/>
+    <circle cx="40" cy="38" r="24" stroke="#77797A" stroke-width="3.5" fill="none"/>
+  </svg>`;
+}
+function logoHTML(small=false){ return `
+  <div style="display:flex;align-items:center;gap:${small?6:10}px;">
+    ${logoSVG(small)}
+    <div style="line-height:1.15;">
+      <div style="font-weight:300;font-size:${small?11:14}px;letter-spacing:4px;text-transform:uppercase;">
+        <span style="color:var(--grigio);">MEDICAL</span><span style="color:var(--verde);">GROUP</span>
+      </div>
+      ${!small?'<div style="font-size:9px;letter-spacing:2px;color:var(--grigio-chiaro);text-transform:uppercase;font-weight:500;">Gestione Magazzino</div>':''}
+    </div>
+  </div>`; }
+
+// ── Auth card wrapper ─────────────────────────────────────────
+function authCard(content){ return `
+  <div style="min-height:100vh;background:var(--grigio-sfondo);display:flex;align-items:center;justify-content:center;padding:16px;">
+    <div style="background:#fff;border-radius:16px;padding:36px;max-width:420px;width:100%;box-shadow:0 8px 40px #0000001a;border:1px solid var(--bordo);">
+      ${content}
+    </div>
+  </div>`; }
+
+// ── Setup ─────────────────────────────────────────────────────
+function setupHTML(){ return authCard(`
+  <div style="text-align:center;margin-bottom:28px;">${logoHTML()}<div style="margin-top:20px;font-weight:700;font-size:17px;">Configurazione iniziale</div><div style="font-size:13px;color:var(--grigio);margin-top:6px;">Crea l'account amministratore</div></div>
+  <div style="display:flex;flex-direction:column;gap:14px;">
+    ${inp('setup-nome','Nome completo','','text',true)}
+    ${inp('setup-user','Username','es. mrossi','text',true)}
+    ${inp('setup-pass','Password','minimo 6 caratteri','password',true)}
+    ${inp('setup-pass2','Conferma password','','password',true)}
+    <div id="setup-err"></div>
+    <button id="setup-btn" style="${btnStyle('primary',false,true)}">Crea account admin</button>
+  </div>`); }
+
+function bindSetup(){
+  document.getElementById('setup-btn').onclick = async () => {
+    const nome=val('setup-nome'),user=val('setup-user'),pass=val('setup-pass'),pass2=val('setup-pass2');
+    const err=document.getElementById('setup-err');
+    err.innerHTML='';
+    if(!nome||!user||!pass){ err.innerHTML=errBox('Tutti i campi sono obbligatori.'); return; }
+    if(pass.length<6){ err.innerHTML=errBox('Password minimo 6 caratteri.'); return; }
+    if(pass!==pass2){ err.innerHTML=errBox('Le password non coincidono.'); return; }
+    setLoading('setup-btn',true);
+    try{ await doSetup(nome,user,pass); }
+    catch(e){ err.innerHTML=errBox(e.message); setLoading('setup-btn',false); }
+  };
+}
+
+// ── Login ─────────────────────────────────────────────────────
+function loginHTML(){ return authCard(`
+  <div style="text-align:center;margin-bottom:28px;">${logoHTML()}<div style="margin-top:20px;font-size:13px;color:var(--grigio);">Accesso riservato al personale autorizzato</div></div>
+  <div style="display:flex;flex-direction:column;gap:14px;">
+    ${inp('login-user','Username','','text',true)}
+    ${inp('login-pass','Password','','password',true)}
+    <div id="login-err"></div>
+    <button id="login-btn" style="${btnStyle('primary',false,true)}" >Accedi</button>
+  </div>
+  <div style="text-align:center;margin-top:20px;font-size:11px;color:var(--grigio-chiaro);">Medical Group · Gestione Magazzino</div>`); }
+
+function bindLogin(){
+  const go = async () => {
+    const err=document.getElementById('login-err');
+    err.innerHTML='';
+    setLoading('login-btn',true);
+    try{ await doLogin(val('login-user'),val('login-pass')); }
+    catch(e){ err.innerHTML=errBox(e.message); setLoading('login-btn',false); }
+  };
+  document.getElementById('login-btn').onclick=go;
+  document.getElementById('login-pass').addEventListener('keydown',e=>{ if(e.key==='Enter') go(); });
+}
+
+// ── Main App ──────────────────────────────────────────────────
+const TABS_USER  = ['Giacenze','Movimenti'];
+const TABS_ADMIN = ['Giacenze','Movimenti','Articoli','Scadenze','Utenti','Log'];
+const CAUSALI_CARICO  = ['Acquisto','Ricezione da altra sede'];
+const CAUSALI_SCARICO = ['Uso','Reso','Scadenza','Invio ad altra sede'];
+
+function mainHTML(){
+  const isAdmin = state.utente?.ruolo==='admin';
+  const TABS = isAdmin ? TABS_ADMIN : TABS_USER;
+  const giacenze = calcGiacenze();
+  const alertList = Object.values(giacenze).filter(g=>g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min);
+  const mob = state.isMobile;
+
+  const tabsHTML = TABS.map(t=>`
+    <button class="tab-btn" data-tab="${t}" style="background:none;border:none;border-bottom:${t===state.tab?'2px solid var(--verde)':'2px solid transparent'};color:${t===state.tab?'var(--verde)':'var(--grigio)'};cursor:pointer;font-family:inherit;font-weight:600;font-size:${mob?10:12}px;letter-spacing:1.2px;padding:${mob?'10px 12px 8px':'14px 22px 12px'};text-transform:uppercase;white-space:nowrap;flex-shrink:0;">${t}</button>
+  `).join('');
+
+  let content='';
+  if(state.tab==='Giacenze')  content=renderGiacenze(giacenze,alertList);
+  else if(state.tab==='Movimenti') content=renderMovimenti();
+  else if(state.tab==='Articoli'&&isAdmin)  content=renderArticoli(giacenze);
+  else if(state.tab==='Scadenze'&&isAdmin)  content=renderScadenze();
+  else if(state.tab==='Utenti'&&isAdmin)    content=renderUtenti();
+  else if(state.tab==='Log'&&isAdmin)       content=renderLog();
+
+  const stats = [
+    {label:'Articoli',     val:state.articoli.length,  sub:'in anagrafica',  accent:'var(--verde)'},
+    {label:'Sotto scorta', val:alertList.length,        sub:'in alert',       accent:alertList.length>0?'var(--rosso)':'var(--verde)'},
+    {label:'Carichi',      val:state.movimenti.filter(m=>m.tipo==='carico').length,  sub:'totali', accent:'var(--verde)'},
+    {label:'Scarichi',     val:state.movimenti.filter(m=>m.tipo==='scarico').length, sub:'totali', accent:'var(--grigio)'},
+  ].map(s=>`
+    <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;padding:14px 18px;min-width:110px;flex:1;border-top:3px solid ${s.accent};flex-shrink:0;">
+      <div style="font-size:9px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">${s.label}</div>
+      <div style="font-size:24px;font-weight:700;line-height:1;">${s.val}</div>
+      <div style="font-size:10px;color:var(--grigio-chiaro);margin-top:2px;">${s.sub}</div>
+    </div>`).join('');
+
+  const alertBanner = alertList.length>0&&state.tab==='Giacenze' ? `
+    <div style="background:var(--rosso-chiaro);border:1px solid #c0392b33;border-radius:8px;padding:12px 16px;margin-bottom:18px;display:flex;gap:10px;align-items:flex-start;">
+      <span style="font-size:18px;">⚠️</span>
+      <div>
+        <div style="font-weight:700;color:var(--rosso);font-size:13px;margin-bottom:4px;">Articoli sotto scorta minima</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12px;color:var(--grigio-scuro);">
+          ${alertList.map(g=>`<span><b>${g.art.codice}</b> ${g.art.nome}: <span style="color:var(--rosso);font-weight:700;">${fmt(g.pezzi)} ${g.art.um}</span><span style="color:var(--grigio-chiaro);"> / min.${fmt(g.art.scorta_min)}</span></span>`).join('')}
+        </div>
+      </div>
+    </div>` : '';
+
+  const modalHTML = state.modal ? renderModal(giacenze) : '';
+  const toastHTML = state.toast ? `<div style="position:fixed;bottom:${mob?80:24}px;right:${mob?12:24}px;background:${state.toast.type==='ok'?'var(--verde)':'var(--rosso)'};color:#fff;font-weight:700;font-size:12px;padding:12px 20px;border-radius:8px;box-shadow:0 8px 32px #0000002a;z-index:9999;animation:slideUp .25s ease;">${state.toast.msg}</div>` : '';
+
+  const fabHTML = mob ? `
+    <div style="position:fixed;bottom:20px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:200;">
+      <button onclick="openModal({type:'scarico',preselectId:null})" style="width:52px;height:52px;border-radius:50%;background:var(--rosso);color:#fff;border:none;font-size:22px;cursor:pointer;box-shadow:0 4px 16px #c0392b44;">−</button>
+      <button onclick="openModal({type:'carico',preselectId:null})"  style="width:52px;height:52px;border-radius:50%;background:var(--verde);color:#fff;border:none;font-size:22px;cursor:pointer;box-shadow:0 4px 16px #9DBF6044;">+</button>
+    </div>` : '';
+
+  return `
+    <div style="min-height:100vh;background:var(--grigio-sfondo);">
+      <!-- HEADER -->
+      <div style="background:#fff;border-bottom:1px solid var(--bordo);box-shadow:0 1px 6px #0000000a;position:sticky;top:0;z-index:100;">
+        <div style="max-width:1140px;margin:0 auto;padding:0 16px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;height:${mob?54:64}px;">
+            ${logoHTML(mob)}
+            <div style="display:flex;align-items:center;gap:8px;">
+              ${state.syncing?'<span style="font-size:10px;color:var(--verde);font-weight:700;">●</span>':''}
+              ${alertList.length>0?`<div onclick="setTab('Giacenze')" style="background:var(--rosso-chiaro);border:1px solid #c0392b33;border-radius:20px;padding:3px 10px;font-size:10px;color:var(--rosso);font-weight:700;cursor:pointer;">⚠ ${alertList.length}</div>`:''}
+              ${!mob?`<button onclick="openModal({type:'carico',preselectId:null})" style="${btnStyle('outline',true)}">↑ Carico</button><button onclick="openModal({type:'scarico',preselectId:null})" style="${btnStyle('primary',true)}">↓ Scarico</button>`:''}
+              ${!mob?`<span style="font-size:11px;color:var(--grigio);font-weight:600;">${state.utente?.nome_completo}</span>`:''}
+              <button onclick="doLogout()" style="background:none;border:1px solid var(--bordo);color:var(--grigio);cursor:pointer;font-size:11px;font-weight:600;padding:4px 8px;border-radius:4px;font-family:inherit;">Esci</button>
+            </div>
+          </div>
+          <div style="display:flex;overflow-x:auto;scrollbar-width:none;">${tabsHTML}</div>
+        </div>
+      </div>
+      <!-- CONTENT -->
+      <div style="max-width:1140px;margin:0 auto;padding:${mob?'16px 12px':'28px 24px'};padding-bottom:${mob?100:28}px;">
+        <div style="display:flex;gap:12px;margin-bottom:20px;overflow-x:auto;scrollbar-width:none;">${stats}</div>
+        ${alertBanner}
+        ${content}
+      </div>
+      ${fabHTML}
+      ${modalHTML}
+      ${toastHTML}
+    </div>`;
+}
+
+function setTab(t){ state.tab=t; render(); }
+
+function bindMain(){
+  document.querySelectorAll('.tab-btn').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: GIACENZE
+// ════════════════════════════════════════════════════════════════
+function renderGiacenze(giacenze,alertList){
+  const search=(window._giacSearch||'').toLowerCase();
+  const filtro=window._giacFiltro||'tutti';
+  const rows=Object.values(giacenze).filter(g=>{
+    const m=!search||g.art.codice.toLowerCase().includes(search)||g.art.nome.toLowerCase().includes(search)||(g.art.barcode&&g.art.barcode.toLowerCase().includes(search));
+    const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
+    if(filtro==='alert'&&!sotto) return false;
+    if(filtro==='ok'&&sotto)     return false;
+    return m;
+  });
+
+  const pillFiltro=(v,l)=>{
+    const bg=filtro===v?'var(--verde)':'#fff';
+    const cl=filtro===v?'#fff':'var(--grigio)';
+    const bd=filtro===v?'var(--verde)':'var(--bordo)';
+    return `<button onclick="window._giacFiltro='${v}';render();" style="padding:7px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;background:${bg};color:${cl};border:1px solid ${bd};">${l}</button>`;
+  };
+
+  const rowsHTML = state.isMobile
+    ? rows.map(g=>mobileGiacenzaCard(g)).join('')
+    : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+            ${['Codice','Barcode','Descrizione','U.M.','Giacenza','Pz/Sc','Scorta min.','Stato',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${rows.map(g=>desktopGiacenzaRow(g)).join('')}</tbody>
+        </table>
+      </div>`;
+
+  return `
+    <div>
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end;">
+        <div style="position:relative;flex:1;min-width:200px;max-width:300px;">
+          <input id="giac-search" value="${window._giacSearch||''}" placeholder="🔍  Cerca o scansiona barcode…"
+            oninput="window._giacSearch=this.value;render();"
+            style="${inpStyle()} padding-right:40px;">
+          <button onclick="openCameraFor('giac-search',v=>{window._giacSearch=v;render();})" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:var(--verde-pale);border:1px solid var(--verde-chiaro);border-radius:4px;padding:4px 8px;cursor:pointer;font-size:15px;">📷</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${pillFiltro('tutti','Tutti')}${pillFiltro('alert','⚠ Alert')}${pillFiltro('ok','✓ OK')}
+        </div>
+        <button onclick="exportGiacenze()" style="${btnStyle('ghost',true)};margin-left:auto;">⬇ CSV</button>
+      </div>
+      ${rows.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun articolo trovato.</div>':rowsHTML}
+    </div>`;
+}
+
+function mobileGiacenzaCard(g){
+  const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
+  return `<div style="background:#fff;border:1px solid ${sotto?'var(--rosso)':'var(--bordo)'};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+      <div>${pill(g.art.codice,'var(--grigio)')}<div style="font-weight:600;font-size:14px;margin-top:6px;">${g.art.nome}</div></div>
+      <div style="text-align:right;"><div style="font-weight:700;font-size:22px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</div><div style="font-size:11px;color:var(--grigio);">${g.art.um}</div></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
+      <div>${g.art.scorta_min!=null?(sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')):''}</div>
+      <div style="display:flex;gap:8px;">
+        <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
+        <button onclick="openModal({type:'scarico',preselectId:'${g.art.id}'})" style="${btnStyle('ghost',true)}">↓</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function desktopGiacenzaRow(g){
+  const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
+  const pzSc=g.art.pezzi_scatola&&g.pezzi>0?`<span style="color:var(--grigio-chiaro);font-size:10px;margin-left:6px;">(${Math.floor(g.pezzi/g.art.pezzi_scatola)}sc+${g.pezzi%g.art.pezzi_scatola})</span>`:'';
+  return `<tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+    <td style="padding:11px 14px;">${pill(g.art.codice,'var(--grigio)')}</td>
+    <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${g.art.barcode||'—'}</td>
+    <td style="padding:11px 14px;font-weight:600;">${g.art.nome}</td>
+    <td style="padding:11px 14px;color:var(--grigio);">${g.art.um}</td>
+    <td style="padding:11px 14px;"><span style="font-weight:700;font-size:15px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</span>${pzSc}</td>
+    <td style="padding:11px 14px;color:var(--grigio);">${g.art.pezzi_scatola||'—'}</td>
+    <td style="padding:11px 14px;color:var(--grigio);">${g.art.scorta_min!=null?fmt(g.art.scorta_min):'—'}</td>
+    <td style="padding:11px 14px;">${g.art.scorta_min==null?'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>':sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')}</td>
+    <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+      <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
+      <button onclick="openModal({type:'scarico',preselectId:'${g.art.id}'})" style="${btnStyle('ghost',true)}">↓</button>
+    </div></td>
+  </tr>`;
+}
+
+function exportGiacenze(){
+  const giacenze=calcGiacenze();
+  exportCSV(Object.values(giacenze).map(g=>({
+    codice:g.art.codice,nome:g.art.nome,barcode:g.art.barcode||'',um:g.art.um,
+    pezzi:g.pezzi,pz_sc:g.art.pezzi_scatola||'',scorta_min:g.art.scorta_min||'',
+    stato:g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min?'SOTTO SCORTA':'Regolare'
+  })),[
+    {key:'codice',label:'Codice'},{key:'nome',label:'Descrizione'},{key:'barcode',label:'Barcode'},
+    {key:'um',label:'U.M.'},{key:'pezzi',label:'Giacenza'},{key:'pz_sc',label:'Pz/Sc'},
+    {key:'scorta_min',label:'Scorta min.'},{key:'stato',label:'Stato'}
+  ],'giacenze.csv');
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: MOVIMENTI
+// ════════════════════════════════════════════════════════════════
+function renderMovimenti(){
+  const search=(window._movSearch||'').toLowerCase();
+  const filtroT=window._movFiltro||'';
+  const artMap=Object.fromEntries(state.articoli.map(a=>[a.id,a]));
+  const rows=state.movimenti.filter(m=>{
+    const a=artMap[m.articolo_id];
+    const match=!search||a?.codice?.toLowerCase().includes(search)||a?.nome?.toLowerCase().includes(search)||m.causale?.toLowerCase().includes(search)||m.nome_utente?.toLowerCase().includes(search);
+    return match&&(!filtroT||m.tipo===filtroT);
+  });
+  const rowsHTML = state.isMobile
+    ? rows.map(m=>{ const a=artMap[m.articolo_id]; return `
+        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;padding:12px 14px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            ${pill(m.tipo,m.tipo==='carico'?'var(--verde)':'var(--rosso)')}
+            <span style="font-size:11px;color:var(--grigio);">${m.data}</span>
+          </div>
+          <div style="font-weight:600;font-size:13px;">${a?.nome||'?'}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+            <span style="font-weight:700;font-size:16px;color:${m.tipo==='carico'?'var(--verde-scuro)':'var(--rosso)'};">${m.tipo==='carico'?'+':'−'}${fmt(m.quantita)} ${a?.um||''}</span>
+            <span style="font-size:11px;color:var(--grigio);">${m.nome_utente||m.utente||''}</span>
+          </div>
+          <div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;">
+            ${m.causale?`<span style="font-size:11px;color:var(--grigio);">${m.causale}</span>`:''}
+            ${m.scadenza?`<span style="font-size:11px;color:var(--grigio);">Scad. <b>${fmtData(m.scadenza)}</b></span>`:''}
+          </div>
+        </div>`;}).join('')
+    : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+            ${['Data/Ora','Tipo','Utente','Articolo','Quantità','Causale','Scadenza','Note'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${rows.map(m=>{ const a=artMap[m.articolo_id]; return `
+            <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+              <td style="padding:10px 14px;color:var(--grigio);font-size:11px;white-space:nowrap;">${m.data}</td>
+              <td style="padding:10px 14px;">${pill(m.tipo,m.tipo==='carico'?'var(--verde)':'var(--rosso)')}</td>
+              <td style="padding:10px 14px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">${m.nome_utente||m.utente||'—'}</td>
+              <td style="padding:10px 14px;"><span style="color:var(--verde);font-size:11px;margin-right:6px;">${a?.codice||'?'}</span><span style="font-weight:600;">${a?.nome||'?'}</span></td>
+              <td style="padding:10px 14px;"><span style="font-weight:700;color:${m.tipo==='carico'?'var(--verde-scuro)':'var(--rosso)'};">${m.tipo==='carico'?'+':'−'}${fmt(m.quantita)}</span><span style="color:var(--grigio-chiaro);font-size:11px;margin-left:4px;">${a?.um||''}</span></td>
+              <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${m.causale||'—'}</td>
+              <td style="padding:10px 14px;font-size:12px;font-weight:${m.scadenza?600:400};color:${m.scadenza?'var(--testo)':'var(--grigio-chiaro)'};">${fmtData(m.scadenza)}</td>
+              <td style="padding:10px 14px;color:var(--grigio);font-size:11px;">${m.note||'—'}</td>
+            </tr>`;}).join('')}</tbody>
+        </table>
+      </div>`;
+
+  return `
+    <div>
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end;">
+        <input placeholder="🔍  Cerca…" value="${window._movSearch||''}" oninput="window._movSearch=this.value;render();" style="${inpStyle()};max-width:260px;">
+        <select onchange="window._movFiltro=this.value;render();" style="${inpStyle()};max-width:180px;">
+          <option value="" ${!filtroT?'selected':''}>Tutti i movimenti</option>
+          <option value="carico" ${filtroT==='carico'?'selected':''}>Solo carichi</option>
+          <option value="scarico" ${filtroT==='scarico'?'selected':''}>Solo scarichi</option>
+        </select>
+        <button onclick="exportMovimenti()" style="${btnStyle('ghost',true)};margin-left:auto;">⬇ CSV</button>
+      </div>
+      ${rows.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun movimento trovato.</div>':rowsHTML}
+    </div>`;
+}
+
+function exportMovimenti(){
+  const artMap=Object.fromEntries(state.articoli.map(a=>[a.id,a]));
+  exportCSV(state.movimenti.map(m=>{ const a=artMap[m.articolo_id]; return {
+    data:m.data,tipo:m.tipo.toUpperCase(),utente:m.nome_utente||m.utente||'',
+    codice:a?.codice||'?',nome:a?.nome||'?',quantita:m.quantita,
+    causale:m.causale||'',scadenza:fmtData(m.scadenza),note:m.note||''
+  }; }),[
+    {key:'data',label:'Data/Ora'},{key:'tipo',label:'Tipo'},{key:'utente',label:'Utente'},
+    {key:'codice',label:'Codice'},{key:'nome',label:'Descrizione'},{key:'quantita',label:'Qtà (pz)'},
+    {key:'causale',label:'Causale'},{key:'scadenza',label:'Scadenza'},{key:'note',label:'Note'}
+  ],'movimenti.csv');
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: ARTICOLI
+// ════════════════════════════════════════════════════════════════
+function renderArticoli(giacenze){
+  const raw = window._artSearch||'';
+  const search = raw.length>=3 ? raw.toLowerCase() : '';
+  const articoliFiltrati = search
+    ? state.articoli.filter(a=>
+        a.codice.toLowerCase().includes(search)||
+        a.nome.toLowerCase().includes(search)||
+        (a.barcode&&a.barcode.toLowerCase().includes(search))
+      )
+    : state.articoli;
+
+  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=a.scorta_min!=null&&(g?.pezzi??0)<=a.scorta_min; return `
+    <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+      <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
+      <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
+      <td style="padding:11px 14px;font-weight:600;">${a.nome}</td>
+      <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
+      <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
+      <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
+      <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)} ${a.um}</span></td>
+      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+        <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
+        <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
+      </div></td>
+    </tr>`; }).join('');
+  return `
+    <div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap;">
+        <input id="art-search-box" placeholder="🔍  Cerca per codice, barcode o descrizione (min. 3 caratteri)…"
+          value="${raw}"
+          oninput="window._artSearch=this.value;updateArticoliTable();"
+          style="${inpStyle()};max-width:420px;">
+        <button onclick="openModal({type:'nuovo_art'})" style="${btnStyle('primary',false)}">+ Nuovo articolo</button>
+      </div>
+      <div id="art-table-wrap">
+      ${articoliFiltrati.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(search?'Nessun articolo trovato.':'Nessun articolo. Aggiungine uno per iniziare.')+'</div>':`
+        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+              ${['Codice','Barcode','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`}
+      </div>
+    </div>`;
+}
+
+// Aggiorna solo la tabella articoli senza perdere il focus sull'input
+function updateArticoliTable(){
+  const wrap = document.getElementById('art-table-wrap');
+  if(!wrap) { render(); return; }
+  const giacenze = calcGiacenze();
+  const raw = window._artSearch||'';
+  const search = raw.length>=3 ? raw.toLowerCase() : '';
+  const articoliFiltrati = search
+    ? state.articoli.filter(a=>
+        a.codice.toLowerCase().includes(search)||
+        a.nome.toLowerCase().includes(search)||
+        (a.barcode&&a.barcode.toLowerCase().includes(search))
+      )
+    : state.articoli;
+  if(articoliFiltrati.length===0){
+    wrap.innerHTML='<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(search?'Nessun articolo trovato.':'Nessun articolo.')+'</div>';
+    return;
+  }
+  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=a.scorta_min!=null&&(g?.pezzi??0)<=a.scorta_min; return `
+    <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+      <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
+      <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
+      <td style="padding:11px 14px;font-weight:600;">${a.nome}</td>
+      <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
+      <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
+      <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
+      <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)} ${a.um}</span></td>
+      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+        <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
+        <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
+      </div></td>
+    </tr>`; }).join('');
+  wrap.innerHTML=`<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+        ${['Codice','Barcode','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function confirmDeleteArt(id){
+  const g=calcGiacenze();
+  if(g[id]?.pezzi!==0){ showToast('Impossibile eliminare: giacenza non zero.','error'); return; }
+  if(!confirm('Eliminare definitivamente questo articolo e tutti i suoi movimenti?')) return;
+  deleteArticolo(id).then(()=>showToast('Articolo eliminato.')).catch(e=>showToast(e.message,'error'));
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: SCADENZE
+// ════════════════════════════════════════════════════════════════
+function renderScadenze(){
+  const artMap=Object.fromEntries(state.articoli.map(a=>[a.id,a]));
+  const today=new Date(); today.setHours(0,0,0,0);
+  const lotti=state.movimenti.filter(m=>m.tipo==='carico'&&m.scadenza)
+    .map(m=>({...m,art:artMap[m.articolo_id]})).filter(l=>l.art)
+    .sort((a,b)=>a.scadenza.localeCompare(b.scadenza));
+  if(!lotti.length) return '<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessuna scadenza registrata. Le scadenze vengono tracciate al momento del carico.</div>';
+  const gruppi={};
+  lotti.forEach(l=>{ if(!gruppi[l.scadenza]) gruppi[l.scadenza]=[]; gruppi[l.scadenza].push(l); });
+  const statoSc=iso=>{ const d=new Date(iso); d.setHours(0,0,0,0); const diff=Math.round((d-today)/86400000);
+    if(diff<0)   return {label:'SCADUTO',   color:'var(--rosso)',  bg:'var(--rosso-chiaro)'};
+    if(diff<=30) return {label:`tra ${diff} gg`, color:'var(--arancio)',bg:'var(--arancio-chiaro)'};
+    return              {label:`tra ${diff} gg`, color:'var(--verde)', bg:'var(--verde-pale)'}; };
+  return `<div><div style="font-size:11px;color:var(--grigio);margin-bottom:16px;">${lotti.length} lotti · ordinati per data di scadenza</div>
+    <div style="display:flex;flex-direction:column;gap:16px;">
+    ${Object.entries(gruppi).map(([data,items])=>{ const s=statoSc(data); return `
+      <div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+          <div style="font-weight:700;font-size:14px;">${fmtData(data)}</div>
+          <div style="background:${s.bg};color:${s.color};border:1px solid ${s.color}44;border-radius:20px;font-size:10px;font-weight:700;padding:2px 10px;letter-spacing:.8px;">${s.label}</div>
+          <div style="flex:1;height:1px;background:var(--bordo);"></div>
+        </div>
+        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+              ${['Codice','Descrizione','U.M.','Qtà caricata','Caricato il','Da'].map(h=>`<th style="text-align:left;padding:8px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+            </tr></thead>
+            <tbody>${items.map(l=>`
+              <tr style="border-bottom:1px solid var(--bordo);background:${s.label==='SCADUTO'?'var(--rosso-chiaro)':'transparent'};">
+                <td style="padding:9px 14px;">${pill(l.art.codice,'var(--grigio)')}</td>
+                <td style="padding:9px 14px;font-weight:600;">${l.art.nome}</td>
+                <td style="padding:9px 14px;color:var(--grigio);">${l.art.um}</td>
+                <td style="padding:9px 14px;font-weight:700;">${fmt(l.quantita)}</td>
+                <td style="padding:9px 14px;color:var(--grigio);font-size:11px;">${l.data}</td>
+                <td style="padding:9px 14px;color:var(--grigio);font-size:12px;">${l.nome_utente||l.utente||'—'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`; }).join('')}
+    </div></div>`;
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: UTENTI
+// ════════════════════════════════════════════════════════════════
+function renderUtenti(){
+  const rows=state.utenti.map(u=>`
+    <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+      <td style="padding:11px 14px;font-weight:600;">${u.nome_completo}</td>
+      <td style="padding:11px 14px;color:var(--grigio);font-family:monospace;font-size:12px;">@${u.username}</td>
+      <td style="padding:11px 14px;">${pill(u.ruolo,u.ruolo==='admin'?'var(--verde)':'var(--grigio)')}</td>
+      <td style="padding:11px 14px;">${pill(u.attivo?'Attivo':'Disabilitato',u.attivo?'var(--verde)':'var(--rosso)')}</td>
+      <td style="padding:11px 14px;color:var(--grigio);font-size:11px;">${u.created_at}</td>
+      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+        <button onclick="openModal({type:'reset_pass',userId:'${u.id}',userName:${JSON.stringify(u.nome_completo)}})" style="${btnStyle('ghost',true)}">Reset pw</button>
+        ${u.id!==state.utente?.id?`<button onclick="toggleUtente('${u.id}',${u.attivo})" style="${btnStyle(u.attivo?'danger':'outline',true)}">${u.attivo?'Disabilita':'Riabilita'}</button>`:''}
+      </div></td>
+    </tr>`).join('');
+  return `
+    <div>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+        <button onclick="openModal({type:'nuovo_utente'})" style="${btnStyle('primary',false)}">+ Nuovo utente</button>
+      </div>
+      <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+            ${['Nome','Username','Ruolo','Stato','Creato il','Azioni'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function toggleUtente(id,attivo){
+  await db.update('utenti',{attivo:!attivo},`id=eq.${id}`);
+  await loadAll(); showToast('Utente aggiornato.');
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAB: LOG
+// ════════════════════════════════════════════════════════════════
+function renderLog(){
+  const search=(window._logSearch||'').toLowerCase();
+  const dal=window._logDal||''; const al=window._logAl||'';
+  const PER_PAG=10;
+  if(!window._logPag) window._logPag=1;
+  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password'};
+  const COLOR={login:'var(--verde)',logout:'var(--grigio)',carico:'var(--verde)',scarico:'var(--rosso)',crea_utente:'var(--arancio)',reset_password:'var(--arancio)'};
+  const parseD=str=>{ if(!str) return null; const [dp]=str.split(','); const [d,m,y]=dp.trim().split('/'); return new Date(`${y}-${m}-${d}`); };
+  const dalD=dal?new Date(dal):null;
+  const alD =al ?new Date(al) :null; if(alD) alD.setHours(23,59,59);
+  const filtered=state.logEntries.filter(e=>{
+    const q=search; const m=!q||e.nome_completo?.toLowerCase().includes(q)||e.utente?.toLowerCase().includes(q)||(LABEL[e.tipo]||e.tipo).toLowerCase().includes(q);
+    const d=parseD(e.data); const ok=((!dalD||!d||d>=dalD)&&(!alD||!d||d<=alD));
+    return m&&ok;
+  });
+  const totP=Math.max(1,Math.ceil(filtered.length/PER_PAG));
+  const pag=Math.min(window._logPag,totP);
+  const rows=filtered.slice((pag-1)*PER_PAG,pag*PER_PAG);
+  const pagBtn=(p,label,dis)=>`<button onclick="window._logPag=${p};render();" ${dis?'disabled':''} style="padding:6px 10px;border-radius:6px;border:1px solid ${dis?'var(--bordo)':'var(--bordo)'};background:transparent;color:${dis?'var(--grigio-chiaro)':'var(--grigio)'};cursor:${dis?'not-allowed':'pointer'};font-family:inherit;font-size:12px;">${label}</button>`;
+  const pageNums=Array.from({length:totP},(_,i)=>i+1).filter(p=>p===1||p===totP||Math.abs(p-pag)<=1)
+    .reduce((acc,p,i,arr)=>{ if(i>0&&p-arr[i-1]>1) acc.push('…'); acc.push(p); return acc; },[])
+    .map(p=>p==='…'?`<span style="color:var(--grigio);padding:0 4px;">…</span>`:`<button onclick="window._logPag=${p};render();" style="width:32px;height:32px;border-radius:6px;border:1px solid ${p===pag?'var(--verde)':'var(--bordo)'};background:${p===pag?'var(--verde)':'transparent'};color:${p===pag?'#fff':'var(--grigio)'};cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;">${p}</button>`).join('');
+  return `
+    <div>
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end;">
+        <input id="log-search-box" placeholder="🔍  Cerca utente o tipo…" value="${window._logSearch||''}" oninput="window._logSearch=this.value;window._logPag=1;updateLogTable();" style="${inpStyle()};max-width:220px;">
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--grigio-scuro);font-weight:600;">Dal<input type="date" value="${dal}" onchange="window._logDal=this.value;window._logPag=1;updateLogTable();" style="${inpStyle()};max-width:150px;padding:8px 10px;"></div>
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--grigio-scuro);font-weight:600;">Al<input type="date" value="${al}" onchange="window._logAl=this.value;window._logPag=1;updateLogTable();" style="${inpStyle()};max-width:150px;padding:8px 10px;"></div>
+        ${(dal||al||search)?`<button onclick="window._logSearch='';window._logDal='';window._logAl='';window._logPag=1;render();" style="${btnStyle('ghost',true)}">✕ Reset</button>`:''}
+        <button onclick="exportLog()" style="${btnStyle('ghost',true)};margin-left:auto;">⬇ CSV</button>
+      </div>
+      <div id="log-counter" style="font-size:11px;color:var(--grigio);margin-bottom:10px;">${filtered.length} risultati — pagina ${pag} di ${totP}</div>
+      <div id="log-table-wrap">
+      ${rows.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun accesso registrato.</div>':`
+        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+              ${['Data/Ora','Utente','Tipo','Dettaglio'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+            </tr></thead>
+            <tbody>${rows.map(e=>`
+              <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+                <td style="padding:10px 14px;color:var(--grigio);font-size:11px;white-space:nowrap;">${e.data}</td>
+                <td style="padding:10px 14px;"><div style="font-weight:600;font-size:13px;">${e.nome_completo||'—'}</div><div style="font-size:11px;color:var(--grigio);">@${e.utente||''}</div></td>
+                <td style="padding:10px 14px;">${pill(LABEL[e.tipo]||e.tipo,COLOR[e.tipo]||'var(--grigio)')}</td>
+                <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${e.causale||e.target_user||'—'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${totP>1?`<div style="display:flex;justify-content:center;align-items:center;gap:6px;margin-top:16px;">${pagBtn(1,'«',pag<=1)}${pagBtn(pag-1,'‹',pag<=1)}${pageNums}${pagBtn(pag+1,'›',pag>=totP)}${pagBtn(totP,'»',pag>=totP)}</div>`:''}
+      `}
+      </div>
+    </div>`;
+}
+
+function updateLogTable(){
+  // Aggiorna solo il contenuto del log senza ricostruire i filtri (preserva il focus)
+  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password'};
+  const COLOR={login:'var(--verde)',logout:'var(--grigio)',carico:'var(--verde)',scarico:'var(--rosso)',crea_utente:'var(--arancio)',reset_password:'var(--arancio)'};
+  const PER_PAG=10;
+  const search=(window._logSearch||'').toLowerCase();
+  const dal=window._logDal||''; const al=window._logAl||'';
+  const parseD=str=>{ if(!str) return null; const [dp]=str.split(','); const [d,m,y]=dp.trim().split('/'); return new Date(`${y}-${m}-${d}`); };
+  const dalD=dal?new Date(dal):null;
+  const alD=al?new Date(al):null; if(alD) alD.setHours(23,59,59);
+  const filtered=state.logEntries.filter(e=>{
+    const q=search;
+    const m=!q||e.nome_completo?.toLowerCase().includes(q)||e.utente?.toLowerCase().includes(q)||(LABEL[e.tipo]||e.tipo).toLowerCase().includes(q);
+    const d=parseD(e.data);
+    return m&&(!dalD||!d||d>=dalD)&&(!alD||!d||d<=alD);
+  });
+  const totP=Math.max(1,Math.ceil(filtered.length/PER_PAG));
+  const pag=Math.min(window._logPag||1,totP);
+  const rows=filtered.slice((pag-1)*PER_PAG,pag*PER_PAG);
+
+  // Aggiorna contatore
+  const counter=document.getElementById('log-counter');
+  if(counter) counter.textContent=`${filtered.length} risultati — pagina ${pag} di ${totP}`;
+
+  // Aggiorna tabella
+  const wrap=document.getElementById('log-table-wrap');
+  if(!wrap){ render(); return; }
+
+  const pagBtn=(p,label,dis)=>`<button onclick="window._logPag=${p};updateLogTable();" ${dis?'disabled':''} style="padding:6px 10px;border-radius:6px;border:1px solid var(--bordo);background:transparent;color:${dis?'var(--grigio-chiaro)':'var(--grigio)'};cursor:${dis?'not-allowed':'pointer'};font-family:inherit;font-size:12px;">${label}</button>`;
+  const pageNums=Array.from({length:totP},(_,i)=>i+1)
+    .filter(p=>p===1||p===totP||Math.abs(p-pag)<=1)
+    .reduce((acc,p,i,arr)=>{ if(i>0&&p-arr[i-1]>1) acc.push('…'); acc.push(p); return acc; },[])
+    .map(p=>p==='…'?`<span style="color:var(--grigio);padding:0 4px;">…</span>`
+      :`<button onclick="window._logPag=${p};updateLogTable();" style="width:32px;height:32px;border-radius:6px;border:1px solid ${p===pag?'var(--verde)':'var(--bordo)'};background:${p===pag?'var(--verde)':'transparent'};color:${p===pag?'#fff':'var(--grigio)'};cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;">${p}</button>`
+    ).join('');
+
+  if(rows.length===0){
+    wrap.innerHTML='<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun accesso registrato per i criteri selezionati.</div>';
+    return;
+  }
+  wrap.innerHTML=`
+    <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+          ${['Data/Ora','Utente','Tipo','Dettaglio'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+        </tr></thead>
+        <tbody>${rows.map(e=>`
+          <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+            <td style="padding:10px 14px;color:var(--grigio);font-size:11px;white-space:nowrap;">${e.data}</td>
+            <td style="padding:10px 14px;"><div style="font-weight:600;font-size:13px;">${e.nome_completo||'—'}</div><div style="font-size:11px;color:var(--grigio);">@${e.utente||''}</div></td>
+            <td style="padding:10px 14px;">${pill(LABEL[e.tipo]||e.tipo,COLOR[e.tipo]||'var(--grigio)')}</td>
+            <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${e.causale||e.target_user||'—'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${totP>1?`<div style="display:flex;justify-content:center;align-items:center;gap:6px;margin-top:16px;">${pagBtn(1,'«',pag<=1)}${pagBtn(pag-1,'‹',pag<=1)}${pageNums}${pagBtn(pag+1,'›',pag>=totP)}${pagBtn(totP,'»',pag>=totP)}</div>`:''}`;
+}
+
+function exportLog(){
+  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password'};
+  exportCSV(state.logEntries.map(e=>({data:e.data,utente:e.nome_completo||e.utente,tipo:LABEL[e.tipo]||e.tipo,dettaglio:e.causale||e.target_user||''})),
+    [{key:'data',label:'Data/Ora'},{key:'utente',label:'Utente'},{key:'tipo',label:'Tipo'},{key:'dettaglio',label:'Dettaglio'}],'log_accessi.csv');
+}
+
+// ════════════════════════════════════════════════════════════════
+// MODALS
+// ════════════════════════════════════════════════════════════════
+function renderModal(giacenze){
+  const m=state.modal;
+  let html='';
+  if(m.type==='quick_scan') html=quickScanModal(m.art,giacenze);
+  else if(m.type==='carico'||m.type==='scarico') html=movimentoModal(m.type,m.preselectId,giacenze);
+  else if(m.type==='nuovo_art'||m.type==='edit_art') html=articoloModal(m.art);
+  else if(m.type==='nuovo_utente') html=nuovoUtenteModal();
+  else if(m.type==='reset_pass') html=resetPassModal(m.userId,m.userName);
+  return `<div onclick="if(event.target===this)closeModal();" style="position:fixed;inset:0;background:#2c2e2f88;backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:998;padding:16px;">
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:480px;padding:24px;box-shadow:0 24px 80px #0000002a;border:1px solid var(--bordo);max-height:92vh;overflow-y:auto;">
+      ${html}
+    </div>
+  </div>`;
+}
+
+function modalHeader(title,color){
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+    <div style="display:flex;align-items:center;gap:10px;">
+      ${color?`<div style="width:8px;height:8px;border-radius:50%;background:${color};"></div>`:''}
+      <span style="font-weight:700;font-size:15px;">${title}</span>
+    </div>
+    <button onclick="closeModal();" style="background:var(--grigio-sfondo);border:none;color:var(--grigio);cursor:pointer;font-size:18px;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;">×</button>
+  </div>`;
+}
+
+// Quick scan
+function quickScanModal(art,giacenze){
+  const g=giacenze[art.id]; const sotto=art.scorta_min!=null&&(g?.pezzi??0)<=art.scorta_min;
+  return `${modalHeader('Articolo rilevato')}
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      <div style="background:var(--grigio-sfondo);border-radius:8px;padding:16px 18px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div>${pill(art.codice,'var(--grigio)')}<div style="font-weight:700;font-size:16px;margin-top:8px;">${art.nome}</div>${art.barcode?`<div style="font-size:11px;color:var(--grigio);margin-top:4px;font-family:monospace;">${art.barcode}</div>`:''}</div>
+          <div style="text-align:right;"><div style="font-size:28px;font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)}</div><div style="font-size:11px;color:var(--grigio);">${art.um}</div></div>
+        </div>
+        ${sotto?`<div style="margin-top:10px;">${pill('⚠ Sotto scorta (min. '+fmt(art.scorta_min)+')','var(--rosso)')}</div>`:''}
+      </div>
+      <div style="display:flex;gap:10px;">
+        <button onclick="closeModal();setTimeout(()=>openModal({type:'carico',preselectId:'${art.id}'}),50);" style="${btnStyle('outline',false,true)}">↑ Carico</button>
+        <button onclick="closeModal();setTimeout(()=>openModal({type:'scarico',preselectId:'${art.id}'}),50);" style="background:var(--rosso);color:#fff;border:none;border-radius:6px;padding:10px 22px;cursor:pointer;font-family:inherit;font-weight:600;font-size:13px;flex:1;">↓ Scarico</button>
+      </div>
+      <button onclick="closeModal();" style="${btnStyle('ghost',false,true)}">Chiudi</button>
+    </div>`;
+}
+
+
+// Giacenza per lotto: { 'YYYY-MM-DD': pezzi_disponibili }
+function calcLottiPerArticolo(articoloId){
+  const lotti={};
+  state.movimenti.forEach(m=>{
+    if(m.articolo_id!==articoloId||!m.scadenza) return;
+    if(!lotti[m.scadenza]) lotti[m.scadenza]=0;
+    lotti[m.scadenza]+= m.tipo==='carico'?m.quantita:-m.quantita;
+  });
+  // Rimuovi lotti esauriti o negativi
+  Object.keys(lotti).forEach(k=>{ if(lotti[k]<=0) delete lotti[k]; });
+  return lotti;
+}
+
+// Movimento
+function movimentoModal(tipo,preselectId,giacenze){
+  const ac=tipo==='carico'?'var(--verde)':'var(--rosso)';
+  const causali=tipo==='carico'?CAUSALI_CARICO:CAUSALI_SCARICO;
+  const selArt=preselectId?state.articoli.find(a=>a.id===preselectId):null;
+  const artOpts=state.articoli.map(a=>`<option value="${a.id}" ${preselectId===a.id?'selected':''}>${a.codice} — ${a.nome}</option>`).join('');
+  const causOpts=causali.map((c,i)=>`<option value="${c}" ${i===0?'selected':''}>${c}</option>`).join('');
+  const infoBar=selArt?(()=>{ const g=giacenze[selArt.id]; return `<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${selArt.nome}</span><span>Giacenza: <b style="color:var(--testo);">${fmt(g?.pezzi??0)} ${selArt.um}</b></span>${selArt.pezzi_scatola?`<span>Pz/sc: <b style="color:var(--testo);">${selArt.pezzi_scatola}</b></span>`:''} ${selArt.scorta_min!=null?`<span>Min: <b style="color:${(g?.pezzi??0)<=selArt.scorta_min?'var(--rosso)':'var(--testo)'};">${fmt(selArt.scorta_min)}</b></span>`:''}</div>`; })():'';
+
+  // Per scarico: pre-calcola le scadenze disponibili se articolo pre-selezionato
+  const scadSelect = tipo==='scarico' && selArt
+    ? buildScadenzaSelect(selArt.id)
+    : tipo==='scarico'
+      ? '<select id="mov-scad" disabled style="'+inpStyle()+';opacity:.5;"><option>— seleziona prima l\'articolo —</option></select>'
+      : `<input type="date" id="mov-scad" style="${inpStyle()}">`;
+
+  return `${modalHeader(tipo==='carico'?'Registra carico':'Registra scarico',ac)}
+    <div style="display:flex;flex-direction:column;gap:14px;" id="mov-form">
+      <div style="position:relative;">
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
+          Cerca per barcode o codice
+          <div style="display:flex;gap:8px;">
+            <input id="mov-bc" placeholder="Scansiona o digita…" style="${inpStyle()};flex:1;" oninput="movBarcodeInput(this.value);">
+            <button type="button" onclick="openCameraFor('mov-bc',v=>{document.getElementById('mov-bc').value=v;movBarcodeInput(v);})" style="background:var(--verde-pale);border:1.5px solid var(--verde-chiaro);border-radius:6px;padding:0 14px;cursor:pointer;font-size:18px;">📷</button>
+          </div>
+        </label>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Oppure seleziona dalla lista <span style="color:var(--verde);">*</span>
+        <select id="mov-art" onchange="movArtChange()" style="${inpStyle()}"><option value="">— seleziona —</option>${artOpts}</select>
+      </label>
+      <div id="mov-info">${infoBar}</div>
+      <div id="mov-sc-toggle"></div>
+      <div id="mov-qty-wrap">
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Quantità <span style="color:var(--verde);">*</span>
+          <input type="number" id="mov-qty" min="1" oninput="${tipo==='scarico'?'checkQtyScarico();':''}" style="${inpStyle()}">
+        </label>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Causale <span style="color:var(--verde);">*</span>
+        <select id="mov-causale" style="${inpStyle()}">${causOpts}</select>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
+        ${tipo==='scarico'?'Lotto / Data di scadenza':'Data di scadenza'} <span style="color:var(--verde);">*</span>
+        <div id="mov-scad-wrap">${scadSelect}</div>
+      </label>
+      <div id="mov-lotto-info"></div>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Note
+        <input type="text" id="mov-note" style="${inpStyle()}">
+      </label>
+      <div id="mov-err"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
+        <button id="mov-submit-btn" onclick="submitMovimento('${tipo}');" style="background:${ac};color:#fff;border:none;border-radius:6px;padding:10px 22px;cursor:pointer;font-family:inherit;font-weight:600;font-size:13px;box-shadow:0 2px 8px ${ac}44;">Conferma ${tipo}</button>
+      </div>
+    </div>`;
+}
+
+// Costruisce la select delle scadenze disponibili per un articolo (scarico)
+function buildScadenzaSelect(artId){
+  const lotti=calcLottiPerArticolo(artId);
+  const art=state.articoli.find(a=>a.id===artId);
+  const sorted=Object.entries(lotti).sort(([a],[b])=>a.localeCompare(b));
+  if(!sorted.length){
+    return `<select id="mov-scad" disabled style="${inpStyle()};opacity:.5;"><option>Nessun lotto disponibile</option></select>`;
+  }
+  const opts=sorted.map(([data,pz])=>`<option value="${data}">${fmtData(data)} — disponibili: ${fmt(pz)} ${art?.um||''}</option>`).join('');
+  return `<select id="mov-scad" onchange="movScadChange('${artId}')" style="${inpStyle()}"><option value="">— seleziona lotto —</option>${opts}</select>`;
+}
+
+// Aggiorna info lotto e verifica quantità quando si sceglie la scadenza
+function movScadChange(artId){
+  const scad=document.getElementById('mov-scad')?.value;
+  if(!scad){ document.getElementById('mov-lotto-info').innerHTML=''; return; }
+  const lotti=calcLottiPerArticolo(artId);
+  const art=state.articoli.find(a=>a.id===artId);
+  const disp=lotti[scad]??0;
+  document.getElementById('mov-lotto-info').innerHTML=`
+    <div style="background:var(--verde-pale);border:1px solid var(--verde-chiaro);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio-scuro);">
+      Disponibili per questo lotto: <b style="color:var(--testo);font-size:14px;">${fmt(disp)} ${art?.um||''}</b>
+    </div>`;
+  // Imposta il max sull'input quantità
+  const qtyEl=document.getElementById('mov-qty');
+  if(qtyEl){ qtyEl.max=disp; }
+  checkQtyScarico();
+}
+
+// Controlla quantità scarico vs disponibilità lotto e blocca il pulsante
+function checkQtyScarico(){
+  const scad=document.getElementById('mov-scad')?.value;
+  const artId=document.getElementById('mov-art')?.value;
+  const qtyEl=document.getElementById('mov-qty');
+  const btn=document.getElementById('mov-submit-btn');
+  const errEl=document.getElementById('mov-err');
+  if(!scad||!artId||!qtyEl||!btn) return;
+  const lotti=calcLottiPerArticolo(artId);
+  const disp=lotti[scad]??0;
+  const art=state.articoli.find(a=>a.id===artId);
+  const qty=parseInt(qtyEl.value)||0;
+  if(qty>disp&&qty>0){
+    qtyEl.style.borderColor='var(--rosso)';
+    qtyEl.style.boxShadow='0 0 0 3px #c0392b22';
+    errEl.innerHTML=errBox(`Quantità superiore alla disponibilità del lotto: max ${fmt(disp)} ${art?.um||''}.`);
+    btn.disabled=true;
+    btn.style.opacity='0.45';
+    btn.style.cursor='not-allowed';
+  } else {
+    qtyEl.style.borderColor='var(--bordo)';
+    qtyEl.style.boxShadow='none';
+    errEl.innerHTML='';
+    btn.disabled=false;
+    btn.style.opacity='1';
+    btn.style.cursor='pointer';
+  }
+}
+
+function movBarcodeInput(v){
+  const art=findArtByBarcode(v);
+  if(art){ document.getElementById('mov-art').value=art.id; movArtChange(); document.getElementById('mov-bc').value=''; }
+}
+
+function movArtChange(){
+  const id=document.getElementById('mov-art')?.value;
+  const art=state.articoli.find(a=>a.id===id);
+  const g=calcGiacenze();
+  const infoEl=document.getElementById('mov-info');
+  const scEl=document.getElementById('mov-sc-toggle');
+  const scadWrap=document.getElementById('mov-scad-wrap');
+  const lottoInfo=document.getElementById('mov-lotto-info');
+  const errEl=document.getElementById('mov-err');
+  if(!art||!infoEl) return;
+  const gv=g[art.id]?.pezzi??0;
+  infoEl.innerHTML=`<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${art.nome}</span><span>Giacenza: <b style="color:var(--testo);">${fmt(gv)} ${art.um}</b></span>${art.pezzi_scatola?`<span>Pz/sc: <b style="color:var(--testo);">${art.pezzi_scatola}</b></span>`:''}</div>`;
+
+  // Aggiorna select scadenze per scarico
+  if(scadWrap && document.getElementById('mov-scad')?.tagName==='SELECT'){
+    scadWrap.innerHTML=buildScadenzaSelect(art.id);
+    if(lottoInfo) lottoInfo.innerHTML='';
+    if(errEl) errEl.innerHTML='';
+    // Re-abilita pulsante
+    const btn=document.getElementById('mov-submit-btn');
+    if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.style.cursor='pointer'; }
+  }
+
+  if(art.pezzi_scatola&&scEl){
+    scEl.innerHTML=`<div style="display:flex;gap:8px;">
+      <button id="sc-pz" onclick="setModalita('pezzi','${art.id}')" style="flex:1;padding:9px;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;border:1.5px solid var(--verde);background:var(--verde)11;color:var(--verde);">Pezzi singoli</button>
+      <button id="sc-sc" onclick="setModalita('scatole','${art.id}')" style="flex:1;padding:9px;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;border:1.5px solid var(--bordo);background:#fff;color:var(--grigio);">Scatole intere</button>
+    </div>`;
+  } else if(scEl){ scEl.innerHTML=''; }
+}
+
+function setModalita(m,artId){
+  const art=state.articoli.find(a=>a.id===artId);
+  const wrap=document.getElementById('mov-qty-wrap');
+  if(!wrap||!art) return;
+  if(m==='scatole'){
+    wrap.innerHTML=`<div style="display:flex;flex-direction:column;gap:8px;"><label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Numero di scatole <span style="color:var(--verde);">*</span><input type="number" id="mov-qty" min="1" oninput="document.getElementById('mov-qty-info')&&(document.getElementById('mov-qty-info').textContent='= '+(parseInt(this.value)||0)*${art.pezzi_scatola}+' ${art.um} totali')" style="${inpStyle()}"></label><div id="mov-qty-info" style="font-size:11px;color:var(--verde);font-weight:600;"></div></div>`;
+    document.getElementById('sc-pz').style.cssText+='background:#fff;color:var(--grigio);border-color:var(--bordo);';
+    document.getElementById('sc-sc').style.cssText+='background:var(--verde)11;color:var(--verde);border-color:var(--verde);';
+  } else {
+    wrap.innerHTML=`<label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Quantità (${art.um}) <span style="color:var(--verde);">*</span><input type="number" id="mov-qty" min="1" style="${inpStyle()}"></label>`;
+    document.getElementById('sc-pz').style.cssText+='background:var(--verde)11;color:var(--verde);border-color:var(--verde);';
+    document.getElementById('sc-sc').style.cssText+='background:#fff;color:var(--grigio);border-color:var(--bordo);';
+  }
+  window._movModalita=m;
+}
+
+async function submitMovimento(tipo){
+  const errEl=document.getElementById('mov-err'); errEl.innerHTML='';
+  const artId=document.getElementById('mov-art')?.value;
+  const art=state.articoli.find(a=>a.id===artId);
+  const qtyEl=document.getElementById('mov-qty');
+  const scad=document.getElementById('mov-scad')?.value;
+  const causale=document.getElementById('mov-causale')?.value;
+  const note=document.getElementById('mov-note')?.value;
+  if(!artId){ errEl.innerHTML=errBox('Seleziona un articolo.'); return; }
+  const modalita=window._movModalita||'pezzi';
+  let qty=parseInt(qtyEl?.value)||0;
+  if(modalita==='scatole') qty=qty*(art?.pezzi_scatola||0);
+  if(qty<=0){ errEl.innerHTML=errBox('Inserisci una quantità valida.'); return; }
+  if(!scad){ errEl.innerHTML=errBox('Inserisci la data di scadenza.'); return; }
+  if(tipo==='scarico'){
+    const lotti=calcLottiPerArticolo(artId);
+    const dispLotto=lotti[scad]??0;
+    if(qty>dispLotto){ errEl.innerHTML=errBox(`Quantità superiore alla disponibilità del lotto: max ${fmt(dispLotto)} ${art?.um||''}.`); return; }
+  }
+  const btn=document.querySelector('#mov-form button:last-child');
+  if(btn){ btn.innerHTML='<span class="spinner"></span>Salvataggio…'; btn.disabled=true; }
+  try{
+    const fn=tipo==='carico'?doCarico:doScarico;
+    await fn({articoloId:artId,quantita:qty,causale,scadenza:scad,note,
+      isScatola:modalita==='scatole',nScatole:modalita==='scatole'?parseInt(qtyEl?.value):null});
+    closeModal(); showToast(`${tipo==='carico'?'Carico':'Scarico'} registrato.`);
+    window._movModalita='pezzi';
+  } catch(e){ errEl.innerHTML=errBox(e.message); if(btn){btn.innerHTML=`Conferma ${tipo}`;btn.disabled=false;} }
+}
+
+// Articolo
+function articoloModal(art){
+  const isEdit=!!art;
+  return `${modalHeader(isEdit?'Modifica articolo':'Nuovo articolo')}
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Codice interno <span style="color:var(--verde);">*</span><input id="art-codice" value="${art?.codice||''}" placeholder="es. ART001" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Barcode / EAN (opzionale)
+        <div style="display:flex;gap:8px;">
+          <input id="art-barcode" value="${art?.barcode||''}" placeholder="Scansiona o digita il barcode" style="${inpStyle()};flex:1;">
+          <button onclick="openCameraFor('art-barcode',v=>{document.getElementById('art-barcode').value=v;})" style="background:var(--verde-pale);border:1.5px solid var(--verde-chiaro);border-radius:6px;padding:0 14px;cursor:pointer;font-size:18px;">📷</button>
+        </div>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Descrizione <span style="color:var(--verde);">*</span><input id="art-nome" value="${art?.nome||''}" placeholder="es. Guanti nitrile M" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Unità di misura
+        <select id="art-um" style="${inpStyle()}">
+          ${['pz','conf','kg','g','l','ml','m'].map(u=>`<option value="${u}" ${(art?.um||'pz')===u?'selected':''}>${u}</option>`).join('')}
+        </select>
+      </label>
+      <div style="border-top:1px solid var(--bordo);padding-top:14px;display:flex;flex-direction:column;gap:12px;">
+        <div style="font-size:10px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;">Scatola &amp; Scorta</div>
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Pezzi per scatola (opzionale)<input type="number" id="art-pzsc" min="1" value="${art?.pezzi_scatola||''}" placeholder="es. 100" style="${inpStyle()}"></label>
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Scorta minima (opzionale)<input type="number" id="art-scmin" min="0" value="${art?.scorta_min||''}" placeholder="es. 50" style="${inpStyle()}"></label>
+      </div>
+      <div id="art-err"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
+        <button onclick="submitArticolo(${isEdit?`'${art.id}'`:'null'})" style="${btnStyle('primary',false)}">${isEdit?'Salva modifiche':'Crea articolo'}</button>
+      </div>
+    </div>`;
+}
+
+async function submitArticolo(existingId){
+  const errEl=document.getElementById('art-err'); errEl.innerHTML='';
+  const codice=document.getElementById('art-codice').value.trim().toUpperCase();
+  const nome=document.getElementById('art-nome').value.trim();
+  if(!codice||!nome){ errEl.innerHTML=errBox('Codice e descrizione obbligatori.'); return; }
+  const dup=state.articoli.find(a=>a.codice===codice&&a.id!==existingId);
+  if(dup){ errEl.innerHTML=errBox('Codice già esistente.'); return; }
+  const pzscVal = document.getElementById('art-pzsc').value.trim();
+  const scminVal = document.getElementById('art-scmin').value.trim();
+  const art={
+    id:existingId||uid(), codice,
+    barcode:document.getElementById('art-barcode').value.trim()||null,
+    nome, um:document.getElementById('art-um').value,
+    pezzi_scatola: pzscVal!=='' ? parseInt(pzscVal) : null,
+    scorta_min:    scminVal!=='' ? parseInt(scminVal) : null,
+    created_at:nowStr()
+  };
+  try{ await saveArticolo(art,!existingId); closeModal(); showToast(existingId?'Articolo aggiornato.':'Articolo creato.'); }
+  catch(e){ errEl.innerHTML=errBox(e.message); }
+}
+
+// Nuovo utente
+function nuovoUtenteModal(){
+  return `${modalHeader('Nuovo utente')}
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Nome completo <span style="color:var(--verde);">*</span><input id="nu-nome" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Username <span style="color:var(--verde);">*</span><input id="nu-user" placeholder="es. mrossi" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Password temporanea <span style="color:var(--verde);">*</span><input type="password" id="nu-pass" placeholder="minimo 6 caratteri" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Ruolo
+        <select id="nu-ruolo" style="${inpStyle()}"><option value="operatore">Operatore (solo carico/scarico)</option><option value="admin">Amministratore (accesso completo)</option></select>
+      </label>
+      <div id="nu-err"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
+        <button onclick="submitNuovoUtente()" style="${btnStyle('primary',false)}">Crea utente</button>
+      </div>
+    </div>`;
+}
+
+async function submitNuovoUtente(){
+  const errEl=document.getElementById('nu-err'); errEl.innerHTML='';
+  const nome=document.getElementById('nu-nome').value.trim();
+  const user=document.getElementById('nu-user').value.trim().toLowerCase();
+  const pass=document.getElementById('nu-pass').value;
+  const ruolo=document.getElementById('nu-ruolo').value;
+  if(!nome||!user||!pass){ errEl.innerHTML=errBox('Tutti i campi sono obbligatori.'); return; }
+  if(pass.length<6){ errEl.innerHTML=errBox('Password minimo 6 caratteri.'); return; }
+  if(state.utenti.find(u=>u.username===user)){ errEl.innerHTML=errBox('Username già esistente.'); return; }
+  const hash=await sha256(pass);
+  try{ await saveUtente({username:user,password_hash:hash,nome_completo:nome,ruolo},true); closeModal(); showToast('Utente creato.'); }
+  catch(e){ errEl.innerHTML=errBox(e.message); }
+}
+
+// Reset password
+function resetPassModal(userId,userName){
+  return `${modalHeader(`Reset password — ${userName}`)}
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Nuova password <span style="color:var(--verde);">*</span><input type="password" id="rp-pass" placeholder="minimo 6 caratteri" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Conferma password <span style="color:var(--verde);">*</span><input type="password" id="rp-pass2" style="${inpStyle()}"></label>
+      <div id="rp-err"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
+        <button onclick="submitResetPass('${userId}')" style="${btnStyle('primary',false)}">Aggiorna password</button>
+      </div>
+    </div>`;
+}
+
+async function submitResetPass(userId){
+  const errEl=document.getElementById('rp-err'); errEl.innerHTML='';
+  const pass=document.getElementById('rp-pass').value;
+  const pass2=document.getElementById('rp-pass2').value;
+  if(!pass){ errEl.innerHTML=errBox('Inserisci la nuova password.'); return; }
+  if(pass.length<6){ errEl.innerHTML=errBox('Minimo 6 caratteri.'); return; }
+  if(pass!==pass2){ errEl.innerHTML=errBox('Le password non coincidono.'); return; }
+  const hash=await sha256(pass);
+  try{
+    await db.update('utenti',{password_hash:hash},`id=eq.${userId}`);
+    await db.insert('log_accessi',{id:uid(),tipo:'reset_password',utente:state.utente.username,nome_completo:state.utente.nome_completo,target_user:userId,data:nowStr()});
+    await loadAll(); closeModal(); showToast('Password aggiornata.');
+  } catch(e){ errEl.innerHTML=errBox(e.message); }
+}
+
+// ════════════════════════════════════════════════════════════════
+// CAMERA SCANNER
+// ════════════════════════════════════════════════════════════════
+function openCameraFor(inputId, callback){
+  const overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:#000000ee;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000;padding:16px;';
+  overlay.innerHTML=`
+    <div style="background:#fff;border-radius:12px;overflow:hidden;width:100%;max-width:480px;box-shadow:0 24px 80px #000;">
+      <div style="background:#2c2e2f;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="color:#fff;font-weight:700;font-size:14px;">📷 Scansione barcode</span>
+        <button id="cam-close" style="background:none;border:none;color:#fff;cursor:pointer;font-size:20px;">×</button>
+      </div>
+      <div style="position:relative;background:#000;min-height:200px;">
+        <video id="cam-video" autoplay playsinline muted style="width:100%;max-height:320px;display:block;object-fit:cover;"></video>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
+          <div style="width:220px;height:120px;border:2px solid #9DBF60;border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,.5);"></div>
+        </div>
+      </div>
+      <div id="cam-status" style="padding:10px 16px;text-align:center;font-size:12px;color:#77797A;min-height:40px;">Avvio fotocamera…</div>
+      <div id="cam-debug" style="padding:0 16px 4px;text-align:center;font-size:10px;color:#c8c9ca;font-family:monospace;"></div>
+      <div style="padding:8px 16px 16px;display:flex;justify-content:center;">
+        <button id="cam-cancel" style="background:transparent;color:#77797A;border:1px solid #e2e4e2;border-radius:6px;font-family:inherit;font-weight:600;font-size:13px;padding:10px 22px;cursor:pointer;">Annulla</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  let stream=null, scanning=true, frameCount=0;
+  const setStatus = t => { const el=overlay.querySelector('#cam-status'); if(el) el.textContent=t; };
+  const setDebug  = t => { const el=overlay.querySelector('#cam-debug');  if(el) el.textContent=t; };
+  const close = () => {
+    scanning=false;
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    overlay.remove();
+  };
+  overlay.querySelector('#cam-close').onclick = close;
+  overlay.querySelector('#cam-cancel').onclick = close;
+
+  (async()=>{
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        video:{ facingMode:'environment', width:{ideal:1920}, height:{ideal:1080} }
+      });
+
+      const video = overlay.querySelector('#cam-video');
+      video.srcObject = stream;
+
+      // Aspetta che il video sia pronto
+      await new Promise(res=>{
+        video.onloadedmetadata = () => { video.play().then(res).catch(res); };
+        setTimeout(res, 3000); // timeout di sicurezza
+      });
+
+      const track = stream.getVideoTracks()[0];
+      const settings = track.getSettings();
+      setDebug(`${settings.width}x${settings.height} | ${settings.facingMode||'camera'}`);
+
+      // Tenta autofocus se disponibile
+      if(track.getCapabilities && track.applyConstraints){
+        const caps = track.getCapabilities();
+        if(caps.focusMode && caps.focusMode.includes('continuous')){
+          await track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});
         }
-        if(!mounted) return;
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video:{ facingMode:"environment", width:{ideal:1280}, height:{ideal:720} }
-        });
-        streamRef.current=stream;
-        if(videoRef.current) videoRef.current.srcObject=stream;
-        setStatus("Punta la fotocamera sul barcode");
+      }
 
-        const hints = new Map();
-        const ZX = window.ZXing;
-        const formats = [
-          ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.EAN_8,
-          ZX.BarcodeFormat.QR_CODE, ZX.BarcodeFormat.CODE_128,
-          ZX.BarcodeFormat.CODE_39, ZX.BarcodeFormat.DATA_MATRIX,
-          ZX.BarcodeFormat.ITF, ZX.BarcodeFormat.UPC_A, ZX.BarcodeFormat.UPC_E,
-        ];
-        hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, formats);
-        hints.set(ZX.DecodeHintType.TRY_HARDER, true);
-        const reader = new ZX.MultiFormatReader();
-        reader.setHints(hints);
-        readerRef.current=reader;
+      // ── Strategia 1: BarcodeDetector nativa ──────────────────
+      if(typeof BarcodeDetector !== 'undefined'){
+        setStatus('Punta il barcode nel riquadro verde…');
+        setDebug(prev => prev + ' | BarcodeDetector');
 
-        const canvas=document.createElement("canvas");
-        const ctx=canvas.getContext("2d");
-        let scanning=true;
+        let supported = ['qr_code','ean_13','ean_8','code_128','code_39','itf','upc_a','upc_e','data_matrix','aztec','pdf417'];
+        try {
+          supported = await BarcodeDetector.getSupportedFormats();
+        } catch{}
 
-        const tick = () => {
-          if(!mounted||!scanning) return;
-          const v=videoRef.current;
-          if(v&&v.readyState===v.HAVE_ENOUGH_DATA){
-            canvas.width=v.videoWidth; canvas.height=v.videoHeight;
-            ctx.drawImage(v,0,0);
-            try {
-              const imgData=ctx.getImageData(0,0,canvas.width,canvas.height);
-              const lum=new ZX.RGBLuminanceSource(imgData.data,canvas.width,canvas.height);
-              const bmp=new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum));
-              const result=reader.decode(bmp);
-              if(result&&mounted){
-                scanning=false;
-                onScan(result.getText());
+        const detector = new BarcodeDetector({ formats: supported });
+        let lastTry = 0;
+
+        const tick = async () => {
+          if(!scanning) return;
+          frameCount++;
+          const now = Date.now();
+          // Prova ogni 200ms (5fps) per non sovraccaricare
+          if(now - lastTry >= 200 && video.readyState >= 2 && video.videoWidth > 0){
+            lastTry = now;
+            try{
+              const results = await detector.detect(video);
+              if(results && results.length > 0){
+                scanning = false;
+                close();
+                callback(results[0].rawValue);
+                return;
               }
-            } catch {}
+              if(frameCount % 15 === 0) setDebug(`BarcodeDetector | frame ${frameCount} | nessun codice`);
+            } catch(e){
+              if(frameCount % 15 === 0) setDebug(`BD err: ${e.message}`);
+            }
           }
           if(scanning) requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
-        return ()=>{ scanning=false; };
-      } catch(err) {
-        if(mounted) setError("Fotocamera non disponibile o permesso negato.");
+        return;
       }
-    };
-    start();
-    return ()=>{
-      mounted=false;
-      if(streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
-    };
-  },[onScan]);
 
-  return (
-    <div style={{ position:"fixed", inset:0, background:"#000000ee",
-      display:"flex", flexDirection:"column", alignItems:"center",
-      justifyContent:"center", zIndex:1000, padding:16 }}>
-      <div style={{ background:C.bianco, borderRadius:12, overflow:"hidden",
-        width:"100%", maxWidth:480, boxShadow:"0 24px 80px #000" }}>
-        <div style={{ background:C.testo, padding:"12px 16px",
-          display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-          <span style={{ color:C.bianco, fontWeight:700, fontSize:14 }}>📷 Scansione barcode</span>
-          <button onClick={onClose} style={{ background:"none", border:"none",
-            color:C.bianco, cursor:"pointer", fontSize:20 }}>×</button>
-        </div>
-        {error
-          ? <div style={{ padding:32, textAlign:"center", color:C.rosso, fontSize:13 }}>{error}</div>
-          : <>
-              <div style={{ position:"relative", background:"#000" }}>
-                <video ref={videoRef} autoPlay playsInline muted
-                  style={{ width:"100%", maxHeight:320, display:"block", objectFit:"cover" }} />
-                {/* mirino */}
-                <div style={{ position:"absolute", inset:0, display:"flex",
-                  alignItems:"center", justifyContent:"center", pointerEvents:"none" }}>
-                  <div style={{ width:220, height:120, border:`2px solid ${C.verde}`,
-                    borderRadius:8, boxShadow:`0 0 0 9999px rgba(0,0,0,.45)` }} />
-                </div>
-              </div>
-              <div style={{ padding:"12px 16px", textAlign:"center",
-                fontSize:12, color:C.grigio }}>{status}</div>
-            </>
+      // ── Strategia 2: ZXing via CDN multipli ──────────────────
+      setStatus('Caricamento decoder barcode…');
+      const CDNS = [
+        'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js',
+        'https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js',
+        'https://cdn.jsdelivr.net/npm/@zxing/library/umd/index.min.js',
+      ];
+
+      if(!window.ZXing){
+        let ok = false;
+        for(const url of CDNS){
+          try{
+            await new Promise((res,rej)=>{
+              const s = document.createElement('script');
+              s.src = url;
+              s.onload = res;
+              s.onerror = ()=>rej(new Error('cdn fail'));
+              document.head.appendChild(s);
+            });
+            ok = true;
+            setDebug('ZXing loaded: '+url.split('/')[2]);
+            break;
+          } catch{ continue; }
         }
-        <div style={{ padding:"0 16px 16px", display:"flex", justifyContent:"center" }}>
-          <Btn variant="ghost" onClick={onClose}>Annulla</Btn>
-        </div>
-      </div>
-    </div>
-  );
-}
+        if(!ok){
+          setStatus('⚠️ Decoder non disponibile. Prova a digitare il codice manualmente.');
+          return;
+        }
+      }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// INPUT CON BARCODE (campo testo + pulsante fotocamera)
-// ─────────────────────────────────────────────────────────────────────────────
-function BarcodeInput({ label, value, onChange, placeholder, required,
-  onScannerInput, // callback quando arriva codice da tastiera/scanner nel campo
-  style={} }) {
-  const [showCam, setShowCam] = useState(false);
-  const inputRef = useRef(null);
-  const bufRef   = useRef("");
-  const lastRef  = useRef(0);
+      setStatus('Punta il barcode nel riquadro verde…');
+      const ZX = window.ZXing;
+      const hints = new Map();
+      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS,[
+        ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.EAN_8,
+        ZX.BarcodeFormat.QR_CODE, ZX.BarcodeFormat.CODE_128,
+        ZX.BarcodeFormat.CODE_39, ZX.BarcodeFormat.DATA_MATRIX,
+        ZX.BarcodeFormat.ITF, ZX.BarcodeFormat.UPC_A, ZX.BarcodeFormat.UPC_E,
+        ZX.BarcodeFormat.AZTEC, ZX.BarcodeFormat.PDF_417,
+      ]);
+      hints.set(ZX.DecodeHintType.TRY_HARDER, true);
+      const reader = new ZX.MultiFormatReader();
+      reader.setHints(hints);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', {willReadFrequently:true});
 
-  // rileva scanner fisico dentro il campo input (input veloce)
-  const handleKeyDown = e => {
-    const now=Date.now();
-    if(now-lastRef.current>120) bufRef.current="";
-    lastRef.current=now;
-    if(e.key==="Enter"&&bufRef.current.length>=3){
-      e.preventDefault();
-      onScannerInput&&onScannerInput(bufRef.current.trim());
-      bufRef.current="";
-    } else if(e.key.length===1) bufRef.current+=e.key;
-  };
+      let lastTry2 = 0;
+      const tick2 = () => {
+        if(!scanning) return;
+        frameCount++;
+        const now = Date.now();
+        if(now - lastTry2 >= 150 && video.readyState >= 2 && video.videoWidth > 0){
+          lastTry2 = now;
+          canvas.width  = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+          try{
+            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const lum = new ZX.RGBLuminanceSource(img.data, canvas.width, canvas.height);
+            const bmp = new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum));
+            const result = reader.decode(bmp);
+            if(result){ scanning=false; close(); callback(result.getText()); return; }
+          } catch{}
+          if(frameCount % 20 === 0) setDebug(`ZXing | frame ${frameCount} | ${canvas.width}x${canvas.height}`);
+        }
+        if(scanning) requestAnimationFrame(tick2);
+      };
+      requestAnimationFrame(tick2);
 
-  const handleCamScan = code => {
-    setShowCam(false);
-    onChange(code);
-    onScannerInput&&onScannerInput(code);
-  };
-
-  return (
-    <>
-      <label style={{ display:"flex", flexDirection:"column", gap:5, fontSize:12,
-        color:C.grigioScuro, fontWeight:600, letterSpacing:.4 }}>
-        {label&&<span>{label}{required&&<span style={{color:C.verde}}> *</span>}</span>}
-        <div style={{ display:"flex", gap:8 }}>
-          <input ref={inputRef} type="text" value={value}
-            onChange={e=>onChange(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            style={{ background:C.bianco, border:`1.5px solid ${C.bordo}`, borderRadius:6,
-              color:C.testo, fontFamily:"inherit", fontSize:14, padding:"10px 12px",
-              outline:"none", flex:1, boxSizing:"border-box", ...style }}
-            onFocus={e=>e.target.style.borderColor=C.verde}
-            onBlur={e=>e.target.style.borderColor=C.bordo} />
-          <button type="button" onClick={()=>setShowCam(true)}
-            title="Scansiona con fotocamera"
-            style={{ background:C.verdePale, border:`1.5px solid ${C.verdeChiaro}`,
-              borderRadius:6, padding:"0 14px", cursor:"pointer",
-              fontSize:18, color:C.verde, flexShrink:0 }}>📷</button>
-        </div>
-      </label>
-      {showCam&&<CameraScanner onScan={handleCamScan} onClose={()=>setShowCam(false)} />}
-    </>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// BASE UI
-// ─────────────────────────────────────────────────────────────────────────────
-const Pill = ({ children, color=C.verde }) => (
-  <span style={{ background:color+"22", color, border:`1px solid ${color}55`,
-    borderRadius:20, fontSize:10, fontWeight:700, padding:"2px 9px",
-    letterSpacing:.8, textTransform:"uppercase", whiteSpace:"nowrap" }}>{children}</span>
-);
-
-const Btn = ({ children, onClick, variant="primary", small, disabled, full, style={} }) => {
-  const V = {
-    primary:{ background:C.verde,  color:"#fff", border:"none", boxShadow:`0 2px 8px ${C.verde}44` },
-    danger: { background:C.rosso,  color:"#fff", border:"none" },
-    ghost:  { background:"transparent", color:C.grigio, border:`1px solid ${C.bordo}` },
-    outline:{ background:"transparent", color:C.verde,  border:`1px solid ${C.verde}` },
-  };
-  return (
-    <button onClick={disabled?undefined:onClick} style={{
-      ...V[variant], borderRadius:6, fontFamily:"inherit", fontWeight:600,
-      fontSize:small?11:13, padding:small?"6px 14px":"10px 22px",
-      cursor:disabled?"not-allowed":"pointer", opacity:disabled?.45:1,
-      letterSpacing:.3, transition:"opacity .15s", width:full?"100%":"auto", ...style,
-    }}>{children}</button>
-  );
-};
-
-const Inp = ({ label, value, onChange, type="text", min, placeholder, required, autoFocus, style={} }) => (
-  <label style={{ display:"flex", flexDirection:"column", gap:5, fontSize:12,
-    color:C.grigioScuro, fontWeight:600, letterSpacing:.4 }}>
-    {label&&<span>{label}{required&&<span style={{color:C.verde}}> *</span>}</span>}
-    <input type={type} value={value} onChange={e=>onChange(e.target.value)}
-      min={min} placeholder={placeholder} autoFocus={autoFocus}
-      style={{ background:C.bianco, border:`1.5px solid ${C.bordo}`, borderRadius:6,
-        color:C.testo, fontFamily:"inherit", fontSize:14, padding:"10px 12px",
-        outline:"none", width:"100%", boxSizing:"border-box", ...style }}
-      onFocus={e=>e.target.style.borderColor=C.verde}
-      onBlur={e=>e.target.style.borderColor=C.bordo} />
-  </label>
-);
-
-const Sel = ({ label, value, onChange, options, required }) => (
-  <label style={{ display:"flex", flexDirection:"column", gap:5, fontSize:12,
-    color:C.grigioScuro, fontWeight:600, letterSpacing:.4 }}>
-    {label&&<span>{label}{required&&<span style={{color:C.verde}}> *</span>}</span>}
-    <select value={value} onChange={e=>onChange(e.target.value)} style={{
-      background:C.bianco, border:`1.5px solid ${C.bordo}`, borderRadius:6,
-      color:value?C.testo:C.grigioChiaro, fontFamily:"inherit", fontSize:14,
-      padding:"10px 12px", outline:"none", width:"100%", boxSizing:"border-box" }}>
-      <option value="">— seleziona —</option>
-      {options.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
-  </label>
-);
-
-const ErrBox = ({ msg, type="error" }) => {
-  if(!msg) return null;
-  const s=type==="ok"?{bg:C.verdePale,bd:C.verde,cl:C.verdeScuro}:{bg:C.rossoChiaro,bd:C.rosso,cl:C.rosso};
-  return <div style={{ background:s.bg, border:`1px solid ${s.bd}44`,
-    borderRadius:6, color:s.cl, fontSize:12, padding:"10px 14px", marginTop:10 }}>{msg}</div>;
-};
-
-const Modal = ({ title, onClose, children }) => (
-  <div style={{ position:"fixed", inset:0, background:"#2c2e2f88",
-    backdropFilter:"blur(3px)", display:"flex", alignItems:"center",
-    justifyContent:"center", zIndex:998, padding:16 }}
-    onClick={e=>e.target===e.currentTarget&&onClose()}>
-    <div style={{ background:C.bianco, borderRadius:12, width:"100%", maxWidth:480,
-      padding:24, boxShadow:"0 24px 80px #0000002a", border:`1px solid ${C.bordo}`,
-      maxHeight:"92vh", overflowY:"auto" }}>
-      <div style={{ display:"flex", justifyContent:"space-between",
-        alignItems:"center", marginBottom:20 }}>
-        <span style={{ fontWeight:700, fontSize:15, color:C.testo }}>{title}</span>
-        <button onClick={onClose} style={{ background:C.grigioSfondo, border:"none",
-          color:C.grigio, cursor:"pointer", fontSize:18, width:30, height:30,
-          borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center" }}>×</button>
-      </div>
-      {children}
-    </div>
-  </div>
-);
-
-const Card = ({ children }) => (
-  <div style={{ background:C.bianco, border:`1px solid ${C.bordo}`,
-    borderRadius:10, overflow:"hidden", boxShadow:"0 1px 4px #0000000a" }}>{children}</div>
-);
-
-const EmptyState = ({ msg }) => (
-  <div style={{ textAlign:"center", color:C.grigioChiaro, padding:"60px 0", fontSize:13 }}>{msg}</div>
-);
-
-const Logo = ({ small }) => (
-  <div style={{ display:"flex", alignItems:"center", gap:small?6:10 }}>
-    <svg width={small?28:36} height={small?22:28} viewBox="0 0 90 70" fill="none">
-      <circle cx="28" cy="22" r="19" stroke={C.verdeChiaro} strokeWidth="3.5" fill="none"/>
-      <circle cx="40" cy="38" r="24" stroke={C.grigio}      strokeWidth="3.5" fill="none"/>
-    </svg>
-    <div style={{ lineHeight:1.15 }}>
-      <div style={{ fontFamily:"'Raleway',sans-serif", fontWeight:300,
-        fontSize:small?11:14, letterSpacing:4, textTransform:"uppercase" }}>
-        <span style={{color:C.grigio}}>MEDICAL</span><span style={{color:C.verde}}>GROUP</span>
-      </div>
-      {!small&&<div style={{ fontSize:9, letterSpacing:2, color:C.grigioChiaro,
-        textTransform:"uppercase", fontWeight:500 }}>Gestione Magazzino</div>}
-    </div>
-  </div>
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SETUP / LOGIN
-// ─────────────────────────────────────────────────────────────────────────────
-function SetupScreen({ onDone }) {
-  const [nome,setNome]=useState(""); const [user,setUser]=useState("");
-  const [pass,setPass]=useState(""); const [pass2,setPass2]=useState("");
-  const [err,setErr]=useState(""); const [loading,setLoading]=useState(false);
-  const submit=async()=>{
-    setErr("");
-    if(!nome.trim()||!user.trim()||!pass) return setErr("Tutti i campi sono obbligatori.");
-    if(pass.length<6) return setErr("Password minimo 6 caratteri.");
-    if(pass!==pass2)  return setErr("Le password non coincidono.");
-    setLoading(true);
-    const hash=await sha256(pass);
-    const admin={id:uid(),username:user.trim().toLowerCase(),passwordHash:hash,
-      nomeCompleto:nome.trim(),ruolo:"admin",attivo:true,createdAt:nowStr()};
-    await sset(KEYS.users,{utenti:[admin]});
-    onDone(admin); setLoading(false);
-  };
-  return (
-    <div style={{ minHeight:"100vh", background:C.grigioSfondo,
-      display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
-      <div style={{ background:C.bianco, borderRadius:16, padding:36, maxWidth:420,
-        width:"100%", boxShadow:"0 8px 40px #0000001a", border:`1px solid ${C.bordo}` }}>
-        <div style={{ textAlign:"center", marginBottom:28 }}>
-          <Logo />
-          <div style={{ marginTop:20, fontWeight:700, fontSize:17, color:C.testo }}>Configurazione iniziale</div>
-          <div style={{ fontSize:13, color:C.grigio, marginTop:6 }}>Crea l'account amministratore</div>
-        </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-          <Inp label="Nome completo" value={nome} onChange={setNome} required autoFocus />
-          <Inp label="Username"      value={user} onChange={setUser} required placeholder="es. mrossi" />
-          <Inp label="Password"      value={pass} onChange={setPass} type="password" required placeholder="minimo 6 caratteri" />
-          <Inp label="Conferma password" value={pass2} onChange={setPass2} type="password" required />
-          <ErrBox msg={err} />
-          <Btn onClick={submit} disabled={loading} full style={{marginTop:6}}>
-            {loading?"Creazione…":"Crea account admin"}
-          </Btn>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function LoginScreen({ onLogin }) {
-  const [user,setUser]=useState(""); const [pass,setPass]=useState("");
-  const [err,setErr]=useState(""); const [loading,setLoading]=useState(false);
-  const submit=async()=>{
-    setErr(""); setLoading(true);
-    const ud=await sget(KEYS.users);
-    const found=(ud?.utenti||[]).find(u=>u.username===user.trim().toLowerCase());
-    if(!found||!found.attivo){setErr("Utente non trovato o disabilitato.");setLoading(false);return;}
-    if(await sha256(pass)!==found.passwordHash){setErr("Password errata.");setLoading(false);return;}
-    const ld=(await sget(KEYS.log))||EMPTY_LOG;
-    ld.entries.unshift({id:uid(),tipo:"login",utente:found.username,nomeCompleto:found.nomeCompleto,data:nowStr()});
-    await sset(KEYS.log,ld);
-    onLogin(found); setLoading(false);
-  };
-  return (
-    <div style={{ minHeight:"100vh", background:C.grigioSfondo,
-      display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
-      <div style={{ background:C.bianco, borderRadius:16, padding:36, maxWidth:380,
-        width:"100%", boxShadow:"0 8px 40px #0000001a", border:`1px solid ${C.bordo}` }}>
-        <div style={{ textAlign:"center", marginBottom:28 }}>
-          <Logo />
-          <div style={{ marginTop:20, fontSize:13, color:C.grigio }}>
-            Accesso riservato al personale autorizzato
-          </div>
-        </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-          <Inp label="Username" value={user} onChange={setUser} required autoFocus />
-          <Inp label="Password" value={pass} onChange={setPass} type="password" required />
-          <ErrBox msg={err} />
-          <Btn onClick={submit} disabled={loading} full style={{marginTop:6}}>
-            {loading?"Accesso…":"Accedi"}
-          </Btn>
-        </div>
-        <div style={{ textAlign:"center", marginTop:20, fontSize:11, color:C.grigioChiaro }}>
-          Medical Group · Gestione Magazzino
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MAIN APP
-// ─────────────────────────────────────────────────────────────────────────────
-const TABS_USER  = ["Giacenze","Movimenti"];
-const TABS_ADMIN = ["Giacenze","Movimenti","Articoli","Scadenze","Utenti","Log"];
-
-export default function App() {
-  const [phase,    setPhase]    = useState("loading");
-  const [utente,   setUtente]   = useState(null);
-  const [db,       setDb]       = useState(null);
-  const [logData,  setLogData]  = useState(EMPTY_LOG);
-  const [usersData,setUsersData]= useState(null);
-  const [tab,      setTab]      = useState("Giacenze");
-  const [modal,    setModal]    = useState(null);
-  const [syncing,  setSyncing]  = useState(false);
-  const [toast,    setToast]    = useState(null);
-  const isMobile = useIsMobile();
-
-  useEffect(()=>{
-    (async()=>{
-      const ud=await sget(KEYS.users);
-      setPhase(!ud||!ud.utenti?.length?"setup":"login");
-    })();
-  },[]);
-
-  useEffect(()=>{
-    if(phase!=="app") return;
-    const load=async()=>{
-      const [d,l,u]=await Promise.all([sget(KEYS.db),sget(KEYS.log),sget(KEYS.users)]);
-      setDb(d||EMPTY_DB); setLogData(l||EMPTY_LOG); setUsersData(u||{utenti:[]});
-    };
-    load();
-    const id=setInterval(load,9000);
-    return ()=>clearInterval(id);
-  },[phase]);
-
-  const persist=useCallback(async newDb=>{
-    setSyncing(true); setDb(newDb); await sset(KEYS.db,newDb); setSyncing(false);
-  },[]);
-
-  const persistUsers=useCallback(async ud=>{
-    setUsersData(ud); await sset(KEYS.users,ud);
-  },[]);
-
-  const addLog=useCallback(async entry=>{
-    const l=(await sget(KEYS.log))||EMPTY_LOG;
-    l.entries.unshift({id:uid(),data:nowStr(),utente:utente.username,nomeCompleto:utente.nomeCompleto,...entry});
-    setLogData({...l}); await sset(KEYS.log,l);
-  },[utente]);
-
-  const showToast=(msg,type="ok")=>{ setToast({msg,type}); setTimeout(()=>setToast(null),3000); };
-
-  const handleLogout=async()=>{ await addLog({tipo:"logout"}); setUtente(null); setDb(null); setPhase("login"); };
-  const handleSetupDone=async admin=>{ await sset(KEYS.db,EMPTY_DB); setUtente(admin); setDb(EMPTY_DB); setLogData(EMPTY_LOG); setUsersData({utenti:[admin]}); setPhase("app"); };
-  const handleLogin=u=>{ setUtente(u); setPhase("app"); };
-
-  // ── barcode globale (lettore fisico fuori dai campi input) ──
-  const giacenze = db ? (() => {
-    const g={};
-    (db.articoli||[]).forEach(a=>{g[a.id]={art:a,pezzi:0};});
-    (db.movimenti||[]).forEach(m=>{ if(g[m.articoloId]) g[m.articoloId].pezzi+=m.tipo==="carico"?m.quantita:-m.quantita; });
-    return g;
-  })() : {};
-
-  const findArtByBarcode = useCallback(code=>{
-    if(!db) return null;
-    return db.articoli.find(a=>
-      a.codice.toLowerCase()===code.toLowerCase()||
-      (a.barcode&&a.barcode.toLowerCase()===code.toLowerCase())
-    );
-  },[db]);
-
-  const handleGlobalScan = useCallback(code=>{
-    if(!db||modal) return; // se c'è già un modal aperto, non fare nulla
-    const art=findArtByBarcode(code);
-    if(art) {
-      showToast(`📦 ${art.codice} — ${art.nome}`,"ok");
-      setModal({ type:"quick_scan", art, code });
-    } else {
-      showToast(`Barcode non trovato: ${code}`,"error");
+    } catch(e){
+      let msg = '⚠️ Fotocamera non disponibile.';
+      if(e.name==='NotAllowedError'||e.name==='PermissionDeniedError')
+        msg='⚠️ Permesso fotocamera negato. Controlla le impostazioni del browser.';
+      else if(e.name==='NotFoundError')
+        msg='⚠️ Nessuna fotocamera trovata su questo dispositivo.';
+      else if(e.message)
+        msg='⚠️ '+e.message;
+      setStatus(msg);
+      setDebug(e.name||'');
     }
-  },[db,modal,findArtByBarcode]);
-
-  useBarcodeScanner(handleGlobalScan, phase==="app"&&!modal);
-
-  if(phase==="loading") return (
-    <div style={{ minHeight:"100vh", background:C.grigioSfondo, display:"flex",
-      alignItems:"center", justifyContent:"center", color:C.grigio,
-      fontFamily:"'Raleway',sans-serif" }}>Caricamento…</div>
-  );
-  if(phase==="setup") return <SetupScreen onDone={handleSetupDone} />;
-  if(phase==="login") return <LoginScreen onLogin={handleLogin} />;
-  if(!db||!utente)    return null;
-
-  const isAdmin=utente.ruolo==="admin";
-  const TABS=isAdmin?TABS_ADMIN:TABS_USER;
-  const alertList=Object.values(giacenze).filter(g=>g.art.scortaMin!=null&&g.pezzi<=g.art.scortaMin);
-
-  return (
-    <div style={{ minHeight:"100vh", background:C.grigioSfondo,
-      fontFamily:"'Raleway','Segoe UI',sans-serif", color:C.testo }}>
-
-      {/* HEADER */}
-      <div style={{ background:C.bianco, borderBottom:`1px solid ${C.bordo}`,
-        boxShadow:"0 1px 6px #0000000a", position:"sticky", top:0, zIndex:100 }}>
-        <div style={{ maxWidth:1140, margin:"0 auto", padding:"0 16px" }}>
-          <div style={{ display:"flex", alignItems:"center",
-            justifyContent:"space-between", height:isMobile?54:64 }}>
-            <Logo small={isMobile} />
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              {syncing&&<span style={{fontSize:10,color:C.verde,fontWeight:700}}>●</span>}
-              {alertList.length>0&&(
-                <div onClick={()=>setTab("Giacenze")} style={{ background:C.rossoChiaro,
-                  border:`1px solid ${C.rosso}33`, borderRadius:20, padding:"3px 10px",
-                  fontSize:10, color:C.rosso, fontWeight:700, cursor:"pointer" }}>
-                  ⚠ {alertList.length}
-                </div>
-              )}
-              {!isMobile&&<>
-                <Btn small variant="outline" onClick={()=>setModal({type:"carico",preselectId:null})}>↑ Carico</Btn>
-                <Btn small onClick={()=>setModal({type:"scarico",preselectId:null})}>↓ Scarico</Btn>
-              </>}
-              {!isMobile&&<span style={{fontSize:11,color:C.grigio,fontWeight:600}}>{utente.nomeCompleto}</span>}
-              <button onClick={handleLogout} style={{ background:"none", border:`1px solid ${C.bordo}`,
-                color:C.grigio, cursor:"pointer", fontSize:11, fontWeight:600,
-                padding:"4px 8px", borderRadius:4, fontFamily:"inherit" }}>Esci</button>
-            </div>
-          </div>
-          <div style={{ display:"flex", overflowX:"auto", scrollbarWidth:"none" }}>
-            {TABS.map(t=>(
-              <button key={t} onClick={()=>setTab(t)} style={{
-                background:"none", border:"none",
-                borderBottom:t===tab?`2px solid ${C.verde}`:"2px solid transparent",
-                color:t===tab?C.verde:C.grigio, cursor:"pointer", fontFamily:"inherit",
-                fontWeight:600, fontSize:isMobile?10:12, letterSpacing:1.2,
-                padding:isMobile?"10px 14px 8px":"14px 22px 12px",
-                textTransform:"uppercase", transition:"color .15s",
-                whiteSpace:"nowrap", flexShrink:0 }}>{t}</button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* FAB mobile */}
-      {isMobile&&(
-        <div style={{ position:"fixed", bottom:20, right:16, display:"flex",
-          flexDirection:"column", gap:10, zIndex:200 }}>
-          <button onClick={()=>setModal({type:"scarico",preselectId:null})} style={{ width:52, height:52,
-            borderRadius:"50%", background:C.rosso, color:"#fff", border:"none",
-            fontSize:22, cursor:"pointer", boxShadow:"0 4px 16px #c0392b44" }}>−</button>
-          <button onClick={()=>setModal({type:"carico",preselectId:null})} style={{ width:52, height:52,
-            borderRadius:"50%", background:C.verde, color:"#fff", border:"none",
-            fontSize:22, cursor:"pointer", boxShadow:"0 4px 16px #9DBF6044" }}>+</button>
-        </div>
-      )}
-
-      {/* CONTENT */}
-      <div style={{ maxWidth:1140, margin:"0 auto",
-        padding:isMobile?"16px 12px":"28px 24px", paddingBottom:isMobile?100:28 }}>
-
-        {/* stats */}
-        <div style={{ display:"flex", gap:12, marginBottom:20, overflowX:"auto", scrollbarWidth:"none" }}>
-          {[
-            {label:"Articoli",     value:db.articoli.length,  sub:"in anagrafica",    accent:C.verde},
-            {label:"Sotto scorta", value:alertList.length,    sub:"in alert",         accent:alertList.length>0?C.rosso:C.verde},
-            {label:"Carichi",      value:db.movimenti.filter(m=>m.tipo==="carico").length,  sub:"totali", accent:C.verde},
-            {label:"Scarichi",     value:db.movimenti.filter(m=>m.tipo==="scarico").length, sub:"totali", accent:C.grigio},
-          ].map(s=>(
-            <div key={s.label} style={{ background:C.bianco, border:`1px solid ${C.bordo}`,
-              borderRadius:10, padding:"14px 18px", minWidth:110, flex:1,
-              borderTop:`3px solid ${s.accent}`, flexShrink:0 }}>
-              <div style={{fontSize:9,color:C.testoMuted,fontWeight:700,letterSpacing:1,textTransform:"uppercase",marginBottom:4}}>{s.label}</div>
-              <div style={{fontSize:24,fontWeight:700,color:C.testo,lineHeight:1}}>{s.value}</div>
-              <div style={{fontSize:10,color:C.grigioChiaro,marginTop:2}}>{s.sub}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* alert banner */}
-        {alertList.length>0&&tab==="Giacenze"&&(
-          <div style={{ background:C.rossoChiaro, border:`1px solid ${C.rosso}33`,
-            borderRadius:8, padding:"12px 16px", marginBottom:18,
-            display:"flex", gap:10, alignItems:"flex-start" }}>
-            <span style={{fontSize:18}}>⚠️</span>
-            <div>
-              <div style={{fontWeight:700,color:C.rosso,fontSize:13,marginBottom:4}}>Articoli sotto scorta minima</div>
-              <div style={{display:"flex",flexWrap:"wrap",gap:"4px 18px",fontSize:12,color:C.grigioScuro}}>
-                {alertList.map(g=>(
-                  <span key={g.art.id}>
-                    <b>{g.art.codice}</b> {g.art.nome}:{" "}
-                    <span style={{color:C.rosso,fontWeight:700}}>{fmt(g.pezzi)} {g.art.um}</span>
-                    <span style={{color:C.grigioChiaro}}> / min.{fmt(g.art.scortaMin)}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {tab==="Giacenze"  && <GiacenzeTab  giacenze={giacenze} isMobile={isMobile} findArt={findArtByBarcode} onCarico={id=>setModal({type:"carico",preselectId:id||null})} onScarico={id=>setModal({type:"scarico",preselectId:id||null})} />}
-        {tab==="Movimenti" && <MovimentiTab movimenti={db.movimenti} articoli={db.articoli} isMobile={isMobile} />}
-        {tab==="Articoli"  && isAdmin && (
-          <ArticoliTab articoli={db.articoli} giacenze={giacenze} isMobile={isMobile}
-            onAdd={()=>setModal("nuovo_art")}
-            onEdit={art=>setModal({type:"edit_art",art})}
-            onDelete={id=>{
-              if(giacenze[id]?.pezzi!==0) return showToast("Impossibile eliminare: giacenza non zero.","error");
-              persist({...db,articoli:db.articoli.filter(a=>a.id!==id),movimenti:db.movimenti.filter(m=>m.articoloId!==id)})
-                .then(()=>showToast("Articolo eliminato."));
-            }} />
-        )}
-        {tab==="Scadenze" && isAdmin && (
-          <ScadenzeTab movimenti={db.movimenti} articoli={db.articoli} isMobile={isMobile} />
-        )}
-        {tab==="Utenti" && isAdmin && (
-          <UtentiTab utenti={usersData?.utenti||[]} currentUser={utente} isMobile={isMobile}
-            onAdd={()=>setModal("nuovo_utente")}
-            onToggle={async uid2=>{
-              const ud={...usersData,utenti:usersData.utenti.map(u=>u.id===uid2?{...u,attivo:!u.attivo}:u)};
-              await persistUsers(ud); showToast("Utente aggiornato.");
-            }}
-            onResetPass={u=>setModal({type:"reset_pass",user:u})} />
-        )}
-        {tab==="Log" && isAdmin && (
-          <AccessiTab entries={logData.entries} isMobile={isMobile} />
-        )}
-      </div>
-
-      {/* MODALS */}
-      {modal==="nuovo_art"&&(
-        <ArticoloModal titolo="Nuovo articolo" articoli={db.articoli} onClose={()=>setModal(null)}
-          onSave={art=>persist({...db,articoli:[...db.articoli,{...art,id:uid()}]})
-            .then(()=>{setModal(null);showToast("Articolo creato.");})} />
-      )}
-      {modal?.type==="edit_art"&&(
-        <ArticoloModal titolo="Modifica articolo" articoli={db.articoli} iniziale={modal.art}
-          onClose={()=>setModal(null)}
-          onSave={art=>persist({...db,articoli:db.articoli.map(a=>a.id===art.id?art:a)})
-            .then(()=>{setModal(null);showToast("Articolo aggiornato.");})} />
-      )}
-      {modal?.type==="carico"&&(
-        <MovimentoModal tipo="carico" articoli={db.articoli} findArt={findArtByBarcode}
-          preselectId={modal.preselectId}
-          onClose={()=>setModal(null)}
-          onSave={async m=>{
-            const mv={...m,id:uid(),data:nowStr(),tipo:"carico",utente:utente.username,nomeUtente:utente.nomeCompleto};
-            await persist({...db,movimenti:[mv,...db.movimenti]});
-            await addLog({tipo:"carico",articoloId:m.articoloId,quantita:m.quantita,causale:m.causale||""});
-            setModal(null); showToast("Carico registrato.");
-          }} />
-      )}
-      {modal?.type==="scarico"&&(
-        <MovimentoModal tipo="scarico" articoli={db.articoli} giacenze={giacenze} findArt={findArtByBarcode}
-          preselectId={modal.preselectId}
-          onClose={()=>setModal(null)}
-          onSave={async m=>{
-            const mv={...m,id:uid(),data:nowStr(),tipo:"scarico",utente:utente.username,nomeUtente:utente.nomeCompleto};
-            await persist({...db,movimenti:[mv,...db.movimenti]});
-            await addLog({tipo:"scarico",articoloId:m.articoloId,quantita:m.quantita,causale:m.causale||""});
-            setModal(null); showToast("Scarico registrato.");
-          }} />
-      )}
-      {modal?.type==="quick_scan"&&(
-        <QuickScanModal art={modal.art} giacenze={giacenze}
-          onClose={()=>setModal(null)}
-          onCarico={()=>setModal({type:"carico",preselectId:modal.art.id})}
-          onScarico={()=>setModal({type:"scarico",preselectId:modal.art.id})} />
-      )}
-      {modal==="nuovo_utente"&&(
-        <NuovoUtenteModal utenti={usersData?.utenti||[]} onClose={()=>setModal(null)}
-          onSave={async u=>{
-            const ud={...usersData,utenti:[...usersData.utenti,{...u,id:uid(),attivo:true,createdAt:nowStr()}]};
-            await persistUsers(ud); await addLog({tipo:"crea_utente",targetUser:u.username});
-            setModal(null); showToast("Utente creato.");
-          }} />
-      )}
-      {modal?.type==="reset_pass"&&(
-        <ResetPassModal user={modal.user} onClose={()=>setModal(null)}
-          onSave={async(uid2,hash)=>{
-            const ud={...usersData,utenti:usersData.utenti.map(u=>u.id===uid2?{...u,passwordHash:hash}:u)};
-            await persistUsers(ud); await addLog({tipo:"reset_password",targetUser:modal.user.username});
-            setModal(null); showToast("Password aggiornata.");
-          }} />
-      )}
-
-      {toast&&(
-        <div style={{ position:"fixed", bottom:isMobile?80:24, right:isMobile?12:24,
-          background:toast.type==="ok"?C.verde:C.rosso, color:"#fff",
-          fontWeight:700, fontSize:12, padding:"12px 20px", borderRadius:8,
-          boxShadow:"0 8px 32px #0000002a", zIndex:9999,
-          animation:"slideUp .25s ease" }}>{toast.msg}</div>
-      )}
-
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Raleway:wght@300;400;500;600;700&display=swap');
-        *{box-sizing:border-box;margin:0;padding:0;}
-        ::-webkit-scrollbar{width:4px;height:4px;}
-        ::-webkit-scrollbar-track{background:${C.grigioSfondo};}
-        ::-webkit-scrollbar-thumb{background:${C.bordoForte};border-radius:3px;}
-        @keyframes slideUp{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);}}
-        input:focus,select:focus{border-color:${C.verde}!important;}
-      `}</style>
-    </div>
-  );
+  })();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// QUICK SCAN MODAL — appare quando si scansiona fuori da un campo
-// ─────────────────────────────────────────────────────────────────────────────
-function QuickScanModal({ art, giacenze, onClose, onCarico, onScarico }) {
-  const g=giacenze[art.id];
-  const sotto=art.scortaMin!=null&&(g?.pezzi??0)<=art.scortaMin;
-  return (
-    <Modal title="Articolo rilevato" onClose={onClose}>
-      <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-        <div style={{ background:C.grigioSfondo, borderRadius:8, padding:"16px 18px" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-            <div>
-              <Pill color={C.grigio}>{art.codice}</Pill>
-              <div style={{ fontWeight:700, fontSize:16, marginTop:8 }}>{art.nome}</div>
-              {art.barcode&&<div style={{ fontSize:11, color:C.grigio, marginTop:4, fontFamily:"monospace" }}>Barcode: {art.barcode}</div>}
-            </div>
-            <div style={{ textAlign:"right" }}>
-              <div style={{ fontSize:28, fontWeight:700,
-                color:sotto?C.rosso:(g?.pezzi??0)===0?C.grigioChiaro:C.testo }}>
-                {fmt(g?.pezzi??0)}
-              </div>
-              <div style={{ fontSize:11, color:C.grigio }}>{art.um}</div>
-            </div>
-          </div>
-          {sotto&&<div style={{marginTop:10}}><Pill color={C.rosso}>⚠ Sotto scorta (min. {fmt(art.scortaMin)})</Pill></div>}
-        </div>
-        <div style={{ display:"flex", gap:10 }}>
-          <Btn full variant="outline" onClick={()=>{onClose();setTimeout(onCarico,50);}}>↑ Carico</Btn>
-          <Btn full style={{background:C.rosso,boxShadow:`0 2px 8px ${C.rosso}44`}}
-            onClick={()=>{onClose();setTimeout(onScarico,50);}}>↓ Scarico</Btn>
-        </div>
-        <Btn variant="ghost" onClick={onClose} full>Chiudi</Btn>
-      </div>
-    </Modal>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GIACENZE
-// ─────────────────────────────────────────────────────────────────────────────
-function GiacenzeTab({ giacenze, isMobile, findArt, onCarico, onScarico }) {
-  const [search,setSearch]=useState("");
-  const [filtro,setFiltro]=useState("tutti");
-
-  const handleScan=code=>{
-    const art=findArt(code);
-    if(art) setSearch(art.codice);
-    else setSearch(code);
+// ════════════════════════════════════════════════════════════════
+// STYLE HELPERS
+// ════════════════════════════════════════════════════════════════
+function inpStyle(){ return 'background:#fff;border:1.5px solid var(--bordo);border-radius:6px;color:var(--testo);font-family:inherit;font-size:14px;padding:10px 12px;width:100%;'; }
+function btnStyle(variant='primary',small=false,full=false){
+  const V={
+    primary:'background:var(--verde);color:#fff;border:none;box-shadow:0 2px 8px #9DBF6044;',
+    danger:'background:var(--rosso);color:#fff;border:none;',
+    ghost:'background:transparent;color:var(--grigio);border:1px solid var(--bordo);',
+    outline:'background:transparent;color:var(--verde);border:1px solid var(--verde);',
   };
-
-  const rows=Object.values(giacenze).filter(g=>{
-    const q=search.toLowerCase();
-    const match=!q||g.art.codice.toLowerCase().includes(q)||g.art.nome.toLowerCase().includes(q)||(g.art.barcode&&g.art.barcode.toLowerCase().includes(q));
-    const sotto=g.art.scortaMin!=null&&g.pezzi<=g.art.scortaMin;
-    if(filtro==="alert"&&!sotto) return false;
-    if(filtro==="ok"&&sotto)     return false;
-    return match;
-  });
-
-  return (
-    <div>
-      <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"flex-end" }}>
-        <div style={{ flex:1, minWidth:200 }}>
-          <BarcodeInput label="" value={search} onChange={setSearch}
-            placeholder="🔍  Cerca o scansiona barcode…"
-            onScannerInput={handleScan} />
-        </div>
-        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-          {[["tutti","Tutti"],["alert","⚠ Alert"],["ok","✓ OK"]].map(([v,l])=>(
-            <button key={v} onClick={()=>setFiltro(v)} style={{
-              padding:"8px 12px", borderRadius:6, fontSize:11, fontWeight:600,
-              cursor:"pointer", fontFamily:"inherit",
-              background:filtro===v?C.verde:C.bianco,
-              color:filtro===v?"#fff":C.grigio,
-              border:filtro===v?`1px solid ${C.verde}`:`1px solid ${C.bordo}`,
-            }}>{l}</button>
-          ))}
-        </div>
-        {!isMobile&&(
-          <Btn small variant="ghost" onClick={()=>exportCSV(
-            rows.map(g=>({codice:g.art.codice,nome:g.art.nome,barcode:g.art.barcode||"",um:g.art.um,
-              pezzi:g.pezzi,pzSc:g.art.pezziScatola||"",scortaMin:g.art.scortaMin??"",
-              stato:g.art.scortaMin!=null&&g.pezzi<=g.art.scortaMin?"SOTTO SCORTA":"Regolare"})),
-            [{key:"codice",label:"Codice"},{key:"nome",label:"Descrizione"},
-             {key:"barcode",label:"Barcode"},{key:"um",label:"U.M."},
-             {key:"pezzi",label:"Giacenza"},{key:"pzSc",label:"Pz/Sc"},
-             {key:"scortaMin",label:"Scorta min."},{key:"stato",label:"Stato"}],
-            "giacenze.csv"
-          )}>⬇ CSV</Btn>
-        )}
-      </div>
-
-      {rows.length===0 ? <EmptyState msg="Nessun articolo corrisponde ai criteri." />
-        : isMobile
-          ? <div style={{display:"flex",flexDirection:"column",gap:10}}>
-              {rows.map(g=>{
-                const sotto=g.art.scortaMin!=null&&g.pezzi<=g.art.scortaMin;
-                return (
-                  <div key={g.art.id} style={{ background:C.bianco,
-                    border:`1px solid ${sotto?C.rosso:C.bordo}`, borderRadius:10, padding:"14px 16px" }}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                      <div>
-                        <Pill color={C.grigio}>{g.art.codice}</Pill>
-                        {g.art.barcode&&<span style={{marginLeft:8,fontSize:10,color:C.grigioChiaro,fontFamily:"monospace"}}>{g.art.barcode}</span>}
-                        <div style={{fontWeight:600,fontSize:14,marginTop:6}}>{g.art.nome}</div>
-                      </div>
-                      <div style={{textAlign:"right"}}>
-                        <div style={{fontWeight:700,fontSize:22,color:sotto?C.rosso:g.pezzi<=0?C.grigioChiaro:C.testo}}>{fmt(g.pezzi)}</div>
-                        <div style={{fontSize:11,color:C.grigio}}>{g.art.um}</div>
-                      </div>
-                    </div>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12}}>
-                      {g.art.scortaMin!=null&&(sotto?<Pill color={C.rosso}>⚠ Sotto scorta</Pill>:<Pill color={C.verde}>✓ OK</Pill>)}
-                      <div style={{display:"flex",gap:8,marginLeft:"auto"}}>
-                        <Btn small variant="outline" onClick={()=>onCarico(g.art.id)}>↑</Btn>
-                        <Btn small variant="ghost"   onClick={()=>onScarico(g.art.id)}>↓</Btn>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          : <Card>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                <thead>
-                  <tr style={{borderBottom:`1px solid ${C.bordo}`,background:C.grigioSfondo}}>
-                    {["Codice","Barcode","Descrizione","U.M.","Giacenza","Pz/Sc","Scorta min.","Stato",""].map(h=>(
-                      <th key={h} style={{textAlign:"left",padding:"10px 14px",fontWeight:700,
-                        fontSize:10,color:C.grigio,textTransform:"uppercase",letterSpacing:.8}}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map(g=>{
-                    const sotto=g.art.scortaMin!=null&&g.pezzi<=g.art.scortaMin;
-                    return (
-                      <tr key={g.art.id} style={{borderBottom:`1px solid ${C.bordo}`}}
-                        onMouseEnter={e=>e.currentTarget.style.background=C.verdePale}
-                        onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                        <td style={{padding:"11px 14px"}}><Pill color={C.grigio}>{g.art.codice}</Pill></td>
-                        <td style={{padding:"11px 14px",fontSize:11,color:C.grigioChiaro,fontFamily:"monospace"}}>{g.art.barcode||"—"}</td>
-                        <td style={{padding:"11px 14px",fontWeight:600}}>{g.art.nome}</td>
-                        <td style={{padding:"11px 14px",color:C.grigio}}>{g.art.um}</td>
-                        <td style={{padding:"11px 14px"}}>
-                          <span style={{fontWeight:700,fontSize:15,color:sotto?C.rosso:g.pezzi<=0?C.grigioChiaro:C.testo}}>{fmt(g.pezzi)}</span>
-                          {g.art.pezziScatola&&g.pezzi>0&&(
-                            <span style={{color:C.grigioChiaro,fontSize:10,marginLeft:6}}>
-                              ({Math.floor(g.pezzi/g.art.pezziScatola)}sc+{g.pezzi%g.art.pezziScatola})
-                            </span>
-                          )}
-                        </td>
-                        <td style={{padding:"11px 14px",color:C.grigio}}>{g.art.pezziScatola??"—"}</td>
-                        <td style={{padding:"11px 14px",color:C.grigio}}>{g.art.scortaMin!=null?fmt(g.art.scortaMin):"—"}</td>
-                        <td style={{padding:"11px 14px"}}>
-                          {g.art.scortaMin==null?<span style={{color:C.grigioChiaro,fontSize:11}}>—</span>
-                            :sotto?<Pill color={C.rosso}>⚠ Sotto scorta</Pill>:<Pill color={C.verde}>✓ OK</Pill>}
-                        </td>
-                        <td style={{padding:"11px 14px"}}>
-                          <div style={{display:"flex",gap:6}}>
-                            <Btn small variant="outline" onClick={()=>onCarico(g.art.id)}>↑</Btn>
-                            <Btn small variant="ghost"   onClick={()=>onScarico(g.art.id)}>↓</Btn>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </Card>
-      }
-    </div>
-  );
+  return `${V[variant]||V.primary}border-radius:6px;font-family:inherit;font-weight:600;font-size:${small?11:13}px;padding:${small?'6px 14px':'10px 22px'};cursor:pointer;letter-spacing:.3px;${full?'width:100%;':''}`;
 }
+function pill(text,color='var(--verde)'){ return `<span style="background:${color}22;color:${color};border:1px solid ${color}55;border-radius:20px;font-size:10px;font-weight:700;padding:2px 9px;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">${text}</span>`; }
+function inp(id,label,placeholder,type='text',required=false){ return `<label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">${label}${required?'<span style="color:var(--verde);"> *</span>':''}<input id="${id}" type="${type}" placeholder="${placeholder}" style="${inpStyle()}"></label>`; }
+function val(id){ return document.getElementById(id)?.value||''; }
+function errBox(msg){ return `<div style="background:var(--rosso-chiaro);border:1px solid #c0392b44;border-radius:6px;color:var(--rosso);font-size:12px;padding:10px 14px;margin-top:10px;">${msg}</div>`; }
+function setLoading(btnId,on){ const b=document.getElementById(btnId); if(b){ b.disabled=on; b.innerHTML=on?'<span class="spinner"></span>Caricamento…':b.innerHTML; } }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MOVIMENTI
-// ─────────────────────────────────────────────────────────────────────────────
-function MovimentiTab({ movimenti, articoli, isMobile }) {
-  const [search,setSearch]=useState("");
-  const [filtroTipo,setFiltroTipo]=useState("");
-  const artMap=Object.fromEntries(articoli.map(a=>[a.id,a]));
-  const rows=movimenti.filter(m=>{
-    const art=artMap[m.articoloId];
-    const match=!search||art?.codice?.toLowerCase().includes(search.toLowerCase())||art?.nome?.toLowerCase().includes(search.toLowerCase())||m.causale?.toLowerCase().includes(search.toLowerCase())||m.nomeUtente?.toLowerCase().includes(search.toLowerCase());
-    return match&&(!filtroTipo||m.tipo===filtroTipo);
-  });
-  return (
-    <div>
-      <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"flex-end"}}>
-        <Inp label="" value={search} onChange={setSearch} placeholder="🔍  Cerca…" style={{maxWidth:260}} />
-        <Sel label="" value={filtroTipo} onChange={setFiltroTipo}
-          options={[{value:"carico",label:"Solo carichi"},{value:"scarico",label:"Solo scarichi"}]} />
-        {!isMobile&&(
-          <div style={{marginLeft:"auto"}}>
-            <Btn small variant="ghost" onClick={()=>exportCSV(
-              rows.map(m=>{const a=artMap[m.articoloId];return{data:m.data,tipo:m.tipo.toUpperCase(),
-                utente:m.nomeUtente||m.utente||"",codice:a?.codice||"?",nome:a?.nome||"?",
-                quantita:m.quantita,causale:m.causale||"",scadenza:m.scadenza||"",note:m.note||""};
-              }),
-              [{key:"data",label:"Data/Ora"},{key:"tipo",label:"Tipo"},{key:"utente",label:"Utente"},
-               {key:"codice",label:"Codice"},{key:"nome",label:"Descrizione"},
-               {key:"quantita",label:"Qtà (pz)"},{key:"causale",label:"Causale"},
-               {key:"scadenza",label:"Scadenza"},{key:"note",label:"Note"}],
-              "movimenti.csv"
-            )}>⬇ CSV</Btn>
-          </div>
-        )}
-      </div>
-      {rows.length===0?<EmptyState msg="Nessun movimento trovato." />
-        :isMobile
-          ?<div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {rows.map(m=>{const art=artMap[m.articoloId]; const fmtSc=m.scadenza?m.scadenza.split("-").reverse().join("/"):""; return(
-                <div key={m.id} style={{background:C.bianco,border:`1px solid ${C.bordo}`,borderRadius:10,padding:"12px 14px"}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                    <Pill color={m.tipo==="carico"?C.verde:C.rosso}>{m.tipo}</Pill>
-                    <span style={{fontSize:11,color:C.grigio}}>{m.data}</span>
-                  </div>
-                  <div style={{fontWeight:600,fontSize:13}}>{art?.nome}</div>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8}}>
-                    <span style={{fontWeight:700,fontSize:16,color:m.tipo==="carico"?C.verdeScuro:C.rosso}}>
-                      {m.tipo==="carico"?"+":"−"}{fmt(m.quantita)} {art?.um}
-                    </span>
-                    <span style={{fontSize:11,color:C.grigio}}>{m.nomeUtente||m.utente||""}</span>
-                  </div>
-                  <div style={{display:"flex",gap:12,marginTop:6,flexWrap:"wrap"}}>
-                    {m.causale&&<span style={{fontSize:11,color:C.grigio}}>{m.causale}</span>}
-                    {fmtSc&&<span style={{fontSize:11,color:C.grigio}}>Scad. <b>{fmtSc}</b></span>}
-                  </div>
-                </div>
-              );})}
-            </div>
-          :<Card>
-              <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                <thead><tr style={{borderBottom:`1px solid ${C.bordo}`,background:C.grigioSfondo}}>
-                  {["Data/Ora","Tipo","Utente","Articolo","Quantità","Causale","Scadenza","Note"].map(h=>(
-                    <th key={h} style={{textAlign:"left",padding:"10px 14px",fontWeight:700,fontSize:10,color:C.grigio,textTransform:"uppercase",letterSpacing:.8}}>{h}</th>
-                  ))}
-                </tr></thead>
-                <tbody>{rows.map(m=>{const art=artMap[m.articoloId]; const fmtSc=m.scadenza?m.scadenza.split("-").reverse().join("/"):""; return(
-                  <tr key={m.id} style={{borderBottom:`1px solid ${C.bordo}`}}
-                    onMouseEnter={e=>e.currentTarget.style.background=C.verdePale}
-                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                    <td style={{padding:"10px 14px",color:C.grigio,fontSize:11}}>{m.data}</td>
-                    <td style={{padding:"10px 14px"}}><Pill color={m.tipo==="carico"?C.verde:C.rosso}>{m.tipo}</Pill></td>
-                    <td style={{padding:"10px 14px",fontSize:12,color:C.grigioScuro,fontWeight:600}}>{m.nomeUtente||m.utente||"—"}</td>
-                    <td style={{padding:"10px 14px"}}><span style={{color:C.verde,fontSize:11,marginRight:6}}>{art?.codice}</span><span style={{fontWeight:600}}>{art?.nome}</span></td>
-                    <td style={{padding:"10px 14px"}}><span style={{fontWeight:700,color:m.tipo==="carico"?C.verdeScuro:C.rosso}}>{m.tipo==="carico"?"+":"−"}{fmt(m.quantita)}</span><span style={{color:C.grigioChiaro,fontSize:11,marginLeft:4}}>{art?.um}</span></td>
-                    <td style={{padding:"10px 14px",color:C.grigio,fontSize:12}}>{m.causale||"—"}</td>
-                    <td style={{padding:"10px 14px",fontSize:12,fontWeight:fmtSc?600:400,color:fmtSc?C.testo:C.grigioChiaro}}>{fmtSc||"—"}</td>
-                    <td style={{padding:"10px 14px",color:C.grigio,fontSize:11}}>{m.note||"—"}</td>
-                  </tr>);
-                })}</tbody>
-              </table>
-            </Card>
-      }
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ARTICOLI
-// ─────────────────────────────────────────────────────────────────────────────
-function ArticoliTab({ articoli, giacenze, isMobile, onAdd, onEdit, onDelete }) {
-  return (
-    <div>
-      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}>
-        <Btn onClick={onAdd}>+ Nuovo articolo</Btn>
-      </div>
-      {articoli.length===0?<EmptyState msg="Nessun articolo." />
-        :<Card>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-            <thead><tr style={{borderBottom:`1px solid ${C.bordo}`,background:C.grigioSfondo}}>
-              {["Codice","Barcode","Descrizione","U.M.","Pz/Sc","Scorta min.","Giacenza",""].map(h=>(
-                <th key={h} style={{textAlign:"left",padding:"10px 14px",fontWeight:700,fontSize:10,color:C.grigio,textTransform:"uppercase",letterSpacing:.8}}>{h}</th>
-              ))}
-            </tr></thead>
-            <tbody>{articoli.map(a=>{const g=giacenze[a.id];const sotto=a.scortaMin!=null&&(g?.pezzi??0)<=a.scortaMin; return(
-              <tr key={a.id} style={{borderBottom:`1px solid ${C.bordo}`}}
-                onMouseEnter={e=>e.currentTarget.style.background=C.verdePale}
-                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                <td style={{padding:"11px 14px"}}><Pill color={C.grigio}>{a.codice}</Pill></td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.grigioChiaro,fontFamily:"monospace"}}>{a.barcode||"—"}</td>
-                <td style={{padding:"11px 14px",fontWeight:600}}>{a.nome}</td>
-                <td style={{padding:"11px 14px",color:C.grigio}}>{a.um}</td>
-                <td style={{padding:"11px 14px",color:C.grigio}}>{a.pezziScatola??"—"}</td>
-                <td style={{padding:"11px 14px"}}>{a.scortaMin!=null?<span style={{fontWeight:600,color:sotto?C.rosso:C.grigioScuro}}>{fmt(a.scortaMin)}</span>:<span style={{color:C.grigioChiaro}}>—</span>}</td>
-                <td style={{padding:"11px 14px"}}><span style={{fontWeight:700,color:sotto?C.rosso:(g?.pezzi??0)===0?C.grigioChiaro:C.testo}}>{fmt(g?.pezzi??0)} {a.um}</span></td>
-                <td style={{padding:"11px 14px"}}><div style={{display:"flex",gap:6}}>
-                  <Btn small variant="ghost" onClick={()=>onEdit(a)}>✎</Btn>
-                  <Btn small variant="danger" onClick={()=>onDelete(a.id)}>✕</Btn>
-                </div></td>
-              </tr>);})}
-            </tbody>
-          </table>
-        </Card>
-      }
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UTENTI
-// ─────────────────────────────────────────────────────────────────────────────
-function UtentiTab({ utenti, currentUser, isMobile, onAdd, onToggle, onResetPass }) {
-  return (
-    <div>
-      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:14}}>
-        <Btn onClick={onAdd}>+ Nuovo utente</Btn>
-      </div>
-      {utenti.length===0?<EmptyState msg="Nessun utente." />
-        :<Card>
-          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-            <thead><tr style={{borderBottom:`1px solid ${C.bordo}`,background:C.grigioSfondo}}>
-              {["Nome","Username","Ruolo","Stato","Creato il","Azioni"].map(h=>(
-                <th key={h} style={{textAlign:"left",padding:"10px 14px",fontWeight:700,fontSize:10,color:C.grigio,textTransform:"uppercase",letterSpacing:.8}}>{h}</th>
-              ))}
-            </tr></thead>
-            <tbody>{utenti.map(u=>(
-              <tr key={u.id} style={{borderBottom:`1px solid ${C.bordo}`}}
-                onMouseEnter={e=>e.currentTarget.style.background=C.verdePale}
-                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                <td style={{padding:"11px 14px",fontWeight:600}}>{u.nomeCompleto}</td>
-                <td style={{padding:"11px 14px",color:C.grigio,fontFamily:"monospace",fontSize:12}}>@{u.username}</td>
-                <td style={{padding:"11px 14px"}}><Pill color={u.ruolo==="admin"?C.verde:C.grigio}>{u.ruolo}</Pill></td>
-                <td style={{padding:"11px 14px"}}><Pill color={u.attivo?C.verde:C.rosso}>{u.attivo?"Attivo":"Disabilitato"}</Pill></td>
-                <td style={{padding:"11px 14px",color:C.grigio,fontSize:11}}>{u.createdAt}</td>
-                <td style={{padding:"11px 14px"}}><div style={{display:"flex",gap:6}}>
-                  <Btn small variant="ghost" onClick={()=>onResetPass(u)}>Reset pw</Btn>
-                  {u.id!==currentUser.id&&<Btn small variant={u.attivo?"danger":"outline"} onClick={()=>onToggle(u.id)}>{u.attivo?"Disabilita":"Riabilita"}</Btn>}
-                </div></td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </Card>
-      }
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ACCESSI
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-// SCADENZE TAB
-// ─────────────────────────────────────────────────────────────────────────────
-function ScadenzeTab({ movimenti, articoli, isMobile }) {
-  const artMap = Object.fromEntries(articoli.map(a=>[a.id,a]));
-  const today  = new Date(); today.setHours(0,0,0,0);
-
-  // Costruisce lista scadenze da movimenti di carico con scadenza
-  // Ogni lotto = un carico con scadenza propria
-  const lotti = movimenti
-    .filter(m=>m.tipo==="carico"&&m.scadenza)
-    .map(m=>({
-      id:       m.id,
-      art:      artMap[m.articoloId],
-      scadenza: m.scadenza,      // "YYYY-MM-DD"
-      quantita: m.quantita,
-      data:     m.data,
-      utente:   m.nomeUtente||m.utente||"",
-    }))
-    .filter(l=>l.art)
-    .sort((a,b)=>a.scadenza.localeCompare(b.scadenza));
-
-  // raggruppati per data scadenza
-  const gruppi = {};
-  lotti.forEach(l=>{
-    if(!gruppi[l.scadenza]) gruppi[l.scadenza]=[];
-    gruppi[l.scadenza].push(l);
-  });
-
-  const fmtData = iso => {
-    const [y,m,d]=iso.split("-"); return `${d}/${m}/${y}`;
-  };
-
-  const statoScadenza = iso => {
-    const d=new Date(iso); d.setHours(0,0,0,0);
-    const diff=Math.round((d-today)/(1000*60*60*24));
-    if(diff<0)  return {label:"Scaduto",     color:C.rosso,   bg:C.rossoChiaro};
-    if(diff<=30) return {label:`${diff}gg`,   color:C.arancio, bg:C.arancioChiaro};
-    return          {label:`${diff}gg`,   color:C.verde,   bg:C.verdePale};
-  };
-
-  if(lotti.length===0) return (
-    <EmptyState msg="Nessuna scadenza registrata. Le scadenze vengono tracciate al momento del carico." />
-  );
-
-  return (
-    <div>
-      <div style={{fontSize:11,color:C.grigio,marginBottom:16}}>
-        {lotti.length} lotti · ordinati per data di scadenza
-      </div>
-
-      <div style={{display:"flex",flexDirection:"column",gap:16}}>
-        {Object.entries(gruppi).map(([data,items])=>{
-          const stato=statoScadenza(data);
-          return (
-            <div key={data}>
-              {/* intestazione gruppo */}
-              <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8}}>
-                <div style={{fontWeight:700,fontSize:14,color:C.testo}}>{fmtData(data)}</div>
-                <div style={{background:stato.bg,color:stato.color,border:`1px solid ${stato.color}44`,
-                  borderRadius:20,fontSize:10,fontWeight:700,padding:"2px 10px",letterSpacing:.8}}>
-                  {stato.label==="Scaduto"?"SCADUTO":`tra ${stato.label}`}
-                </div>
-                <div style={{flex:1,height:1,background:C.bordo}}/>
-              </div>
-
-              {/* lotti del gruppo */}
-              <Card>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                  <thead><tr style={{borderBottom:`1px solid ${C.bordo}`,background:C.grigioSfondo}}>
-                    {["Codice","Descrizione","U.M.","Quantità caricata","Caricato il","Da"].map(h=>(
-                      <th key={h} style={{textAlign:"left",padding:"8px 14px",fontWeight:700,
-                        fontSize:10,color:C.grigio,textTransform:"uppercase",letterSpacing:.8}}>{h}</th>
-                    ))}
-                  </tr></thead>
-                  <tbody>
-                    {items.map(l=>(
-                      <tr key={l.id} style={{borderBottom:`1px solid ${C.bordo}`,
-                        background:stato.label==="Scaduto"?C.rossoChiaro:"transparent"}}
-                        onMouseEnter={e=>e.currentTarget.style.opacity=".8"}
-                        onMouseLeave={e=>e.currentTarget.style.opacity="1"}>
-                        <td style={{padding:"9px 14px"}}><Pill color={C.grigio}>{l.art.codice}</Pill></td>
-                        <td style={{padding:"9px 14px",fontWeight:600}}>{l.art.nome}</td>
-                        <td style={{padding:"9px 14px",color:C.grigio}}>{l.art.um}</td>
-                        <td style={{padding:"9px 14px",fontWeight:700}}>{fmt(l.quantita)}</td>
-                        <td style={{padding:"9px 14px",color:C.grigio,fontSize:11}}>{l.data}</td>
-                        <td style={{padding:"9px 14px",color:C.grigio,fontSize:12}}>{l.utente}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </Card>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function AccessiTab({ entries, isMobile }) {
-  const [search,  setSearch]  = useState("");
-  const [dal,     setDal]     = useState("");
-  const [al,      setAl]      = useState("");
-  const [pagina,  setPagina]  = useState(1);
-  const PER_PAG = 10;
-
-  const LABEL={login:"Login",logout:"Logout",carico:"Carico",scarico:"Scarico",crea_utente:"Nuovo utente",reset_password:"Reset password"};
-  const COLOR ={login:C.verde,logout:C.grigio,carico:C.verde,scarico:C.rosso,crea_utente:C.arancio,reset_password:C.arancio};
-
-  // parse "dd/mm/yyyy, hh:mm:ss" → Date
-  const parseData = str => {
-    if(!str) return null;
-    // log entries formato it-IT: "22/04/2026, 14:30:00"
-    const [datePart] = str.split(",");
-    const [d,m,y] = datePart.trim().split("/");
-    return new Date(`${y}-${m}-${d}`);
-  };
-
-  const dalDate = dal ? new Date(dal) : null;
-  const alDate  = al  ? new Date(al)  : null;
-  if(alDate) alDate.setHours(23,59,59);
-
-  const filtered = entries.filter(e=>{
-    const q=search.toLowerCase();
-    const matchText=!q||e.nomeCompleto?.toLowerCase().includes(q)||e.utente?.toLowerCase().includes(q)||(LABEL[e.tipo]||e.tipo).toLowerCase().includes(q);
-    const d=parseData(e.data);
-    const matchDal=!dalDate||!d||d>=dalDate;
-    const matchAl =!alDate ||!d||d<=alDate;
-    return matchText&&matchDal&&matchAl;
-  });
-
-  const totPagine = Math.max(1, Math.ceil(filtered.length/PER_PAG));
-  const pagCurr   = Math.min(pagina, totPagine);
-  const rows      = filtered.slice((pagCurr-1)*PER_PAG, pagCurr*PER_PAG);
-
-  const resetPagina = () => setPagina(1);
-
-  return (
-    <div>
-      {/* filtri */}
-      <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"flex-end"}}>
-        <Inp label="" value={search} onChange={v=>{setSearch(v);resetPagina();}}
-          placeholder="🔍  Cerca utente o tipo…" style={{maxWidth:220}} />
-        <Inp label="Dal" type="date" value={dal} onChange={v=>{setDal(v);resetPagina();}} style={{maxWidth:150}} />
-        <Inp label="Al"  type="date" value={al}  onChange={v=>{setAl(v); resetPagina();}} style={{maxWidth:150}} />
-        {(dal||al||search)&&(
-          <Btn small variant="ghost" onClick={()=>{setSearch("");setDal("");setAl("");resetPagina();}}>✕ Reset</Btn>
-        )}
-        <div style={{marginLeft:"auto"}}>
-          <Btn small variant="ghost" onClick={()=>exportCSV(
-            filtered.map(e=>({data:e.data,utente:e.nomeCompleto||e.utente,tipo:LABEL[e.tipo]||e.tipo,dettaglio:e.causale||e.targetUser||""})),
-            [{key:"data",label:"Data/Ora"},{key:"utente",label:"Utente"},{key:"tipo",label:"Tipo"},{key:"dettaglio",label:"Dettaglio"}],
-            "log_accessi.csv"
-          )}>⬇ CSV</Btn>
-        </div>
-      </div>
-
-      {/* conteggio */}
-      <div style={{fontSize:11,color:C.grigio,marginBottom:10}}>
-        {filtered.length} risultati — pagina {pagCurr} di {totPagine}
-      </div>
-
-      {rows.length===0?<EmptyState msg="Nessun accesso registrato per i criteri selezionati." />
-        :<>
-          <Card>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-              <thead><tr style={{borderBottom:`1px solid ${C.bordo}`,background:C.grigioSfondo}}>
-                {["Data/Ora","Utente","Tipo","Dettaglio"].map(h=>(
-                  <th key={h} style={{textAlign:"left",padding:"10px 14px",fontWeight:700,fontSize:10,color:C.grigio,textTransform:"uppercase",letterSpacing:.8}}>{h}</th>
-                ))}
-              </tr></thead>
-              <tbody>{rows.map(e=>(
-                <tr key={e.id} style={{borderBottom:`1px solid ${C.bordo}`}}
-                  onMouseEnter={ev=>ev.currentTarget.style.background=C.verdePale}
-                  onMouseLeave={ev=>ev.currentTarget.style.background="transparent"}>
-                  <td style={{padding:"10px 14px",color:C.grigio,fontSize:11,whiteSpace:"nowrap"}}>{e.data}</td>
-                  <td style={{padding:"10px 14px"}}><div style={{fontWeight:600,fontSize:13}}>{e.nomeCompleto}</div><div style={{fontSize:11,color:C.grigio}}>@{e.utente}</div></td>
-                  <td style={{padding:"10px 14px"}}><Pill color={COLOR[e.tipo]||C.grigio}>{LABEL[e.tipo]||e.tipo}</Pill></td>
-                  <td style={{padding:"10px 14px",color:C.grigio,fontSize:12}}>{e.causale||e.targetUser||"—"}</td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </Card>
-
-          {/* paginazione */}
-          {totPagine>1&&(
-            <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:6,marginTop:16}}>
-              <Btn small variant="ghost" disabled={pagCurr<=1} onClick={()=>setPagina(1)}>«</Btn>
-              <Btn small variant="ghost" disabled={pagCurr<=1} onClick={()=>setPagina(p=>p-1)}>‹</Btn>
-              {Array.from({length:totPagine},(_,i)=>i+1)
-                .filter(p=>p===1||p===totPagine||Math.abs(p-pagCurr)<=1)
-                .reduce((acc,p,i,arr)=>{
-                  if(i>0&&p-arr[i-1]>1) acc.push("…");
-                  acc.push(p); return acc;
-                },[])
-                .map((p,i)=>p==="…"
-                  ?<span key={"e"+i} style={{color:C.grigio,padding:"0 4px"}}>…</span>
-                  :<button key={p} onClick={()=>setPagina(p)} style={{
-                    width:32,height:32,borderRadius:6,border:`1px solid ${p===pagCurr?C.verde:C.bordo}`,
-                    background:p===pagCurr?C.verde:"transparent",
-                    color:p===pagCurr?"#fff":C.grigio,
-                    cursor:"pointer",fontFamily:"inherit",fontWeight:600,fontSize:12,
-                  }}>{p}</button>
-                )
-              }
-              <Btn small variant="ghost" disabled={pagCurr>=totPagine} onClick={()=>setPagina(p=>p+1)}>›</Btn>
-              <Btn small variant="ghost" disabled={pagCurr>=totPagine} onClick={()=>setPagina(totPagine)}>»</Btn>
-            </div>
-          )}
-        </>
-      }
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MODALS
-// ─────────────────────────────────────────────────────────────────────────────
-function ArticoloModal({ titolo, articoli, iniziale, onClose, onSave }) {
-  const [codice,setCodice]=useState(iniziale?.codice??"");
-  const [barcode,setBarcode]=useState(iniziale?.barcode??"");
-  const [nome,setNome]=useState(iniziale?.nome??"");
-  const [um,setUm]=useState(iniziale?.um??"pz");
-  const [pezziSc,setPezziSc]=useState(iniziale?.pezziScatola??"");
-  const [scortaMin,setScortaMin]=useState(iniziale?.scortaMin!=null?String(iniziale.scortaMin):"");
-  const [err,setErr]=useState("");
-
-  const submit=()=>{
-    setErr("");
-    if(!codice.trim()||!nome.trim()) return setErr("Codice e descrizione obbligatori.");
-    const dup=articoli.find(a=>a.codice.toLowerCase()===codice.trim().toLowerCase()&&a.id!==iniziale?.id);
-    if(dup) return setErr("Codice già esistente.");
-    onSave({...(iniziale||{}),codice:codice.trim().toUpperCase(),barcode:barcode.trim()||null,
-      nome:nome.trim(),um,pezziScatola:pezziSc?parseInt(pezziSc):null,
-      scortaMin:scortaMin!==""?parseInt(scortaMin):null});
-  };
-
-  return (
-    <Modal title={titolo} onClose={onClose}>
-      <div style={{display:"flex",flexDirection:"column",gap:14}}>
-        <Inp label="Codice interno" value={codice} onChange={setCodice} placeholder="es. ART001" required />
-        <BarcodeInput label="Barcode / EAN (opzionale)" value={barcode} onChange={setBarcode}
-          placeholder="Scansiona o digita il barcode del prodotto"
-          onScannerInput={setBarcode} />
-        <Inp label="Descrizione" value={nome} onChange={setNome} placeholder="es. Guanti nitrile M" required />
-        <Sel label="Unità di misura" value={um} onChange={setUm} options={[
-          {value:"pz",label:"Pezzo (pz)"},{value:"conf",label:"Confezione"},
-          {value:"kg",label:"Kg"},{value:"g",label:"Grammo"},
-          {value:"l",label:"Litro"},{value:"ml",label:"Millilitro"},{value:"m",label:"Metro"},
-        ]} />
-        <div style={{borderTop:`1px solid ${C.bordo}`,paddingTop:14,display:"flex",flexDirection:"column",gap:12}}>
-          <div style={{fontSize:10,color:C.grigio,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>Scatola &amp; Scorta</div>
-          <Inp label="Pezzi per scatola (opzionale)" type="number" min="1" value={pezziSc} onChange={setPezziSc} placeholder="es. 100" />
-          <Inp label="Scorta minima (opzionale)" type="number" min="0" value={scortaMin} onChange={setScortaMin} placeholder="es. 50" />
-          {scortaMin!==""&&<div style={{fontSize:11,color:C.grigioScuro,padding:"8px 12px",background:C.verdePale,borderRadius:6,border:`1px solid ${C.verdeChiaro}`}}>
-            🔔 Alert attivo: giacenza ≤ <b>{fmt(parseInt(scortaMin)||0)} {um}</b>
-          </div>}
-        </div>
-        <ErrBox msg={err} />
-        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:6}}>
-          <Btn variant="ghost" onClick={onClose}>Annulla</Btn>
-          <Btn onClick={submit}>{iniziale?"Salva":"Crea articolo"}</Btn>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-const CAUSALI_CARICO  = ["Acquisto","Ricezione da altra sede"];
-const CAUSALI_SCARICO = ["Uso","Reso","Scadenza","Invio ad altra sede"];
-
-function MovimentoModal({ tipo, articoli, giacenze, findArt, preselectId, onClose, onSave }) {
-  const causaliOpts = tipo==="carico" ? CAUSALI_CARICO : CAUSALI_SCARICO;
-  const [articoloId,  setArticoloId]  = useState(preselectId||"");
-  const [modalita,    setModalita]    = useState("pezzi");
-  const [quantita,    setQuantita]    = useState("");
-  const [nScatole,    setNScatole]    = useState("");
-  const [causale,     setCausale]     = useState(causaliOpts[0]);
-  const [scadenza,    setScadenza]    = useState("");
-  const [note,        setNote]        = useState("");
-  const [err,         setErr]         = useState("");
-  const [barcodeSearch,setBarcodeSearch]=useState("");
-
-  const art  = articoli.find(a=>a.id===articoloId);
-  const giac = giacenze?.[articoloId]?.pezzi??0;
-  const hasSc= !!art?.pezziScatola;
-  const ac   = tipo==="carico"?C.verde:C.rosso;
-
-  const handleBarcodeScan=code=>{
-    setBarcodeSearch(code);
-    const found=findArt(code);
-    if(found){ setArticoloId(found.id); setBarcodeSearch(""); }
-    else setErr(`Barcode non trovato: ${code}`);
-  };
-
-  const calcPz=()=>modalita==="scatole"?(parseInt(nScatole)||0)*(art?.pezziScatola||0):parseInt(quantita)||0;
-
-  const submit=()=>{
-    setErr("");
-    if(!articoloId) return setErr("Seleziona un articolo.");
-    const pz=calcPz();
-    if(pz<=0) return setErr("Inserisci una quantità valida.");
-    if(!scadenza) return setErr("Inserisci la data di scadenza.");
-    if(tipo==="scarico"&&pz>giac) return setErr(`Disponibili: ${fmt(giac)} ${art?.um}.`);
-    onSave({articoloId,quantita:pz,isScatola:modalita==="scatole",
-      nScatole:modalita==="scatole"?parseInt(nScatole):null,
-      causale,scadenza,note});
-  };
-
-  return (
-    <Modal title={<div style={{display:"flex",alignItems:"center",gap:10}}>
-      <div style={{width:8,height:8,borderRadius:"50%",background:ac}}/>
-      {tipo==="carico"?"Registra carico":"Registra scarico"}
-    </div>} onClose={onClose}>
-      <div style={{display:"flex",flexDirection:"column",gap:14}}>
-
-        <BarcodeInput label="Cerca articolo per barcode o codice"
-          value={barcodeSearch} onChange={setBarcodeSearch}
-          placeholder="Scansiona o digita…"
-          onScannerInput={handleBarcodeScan} />
-
-        <Sel label="Oppure seleziona dalla lista" value={articoloId}
-          onChange={v=>{setArticoloId(v);setModalita("pezzi");setErr("");}}
-          options={articoli.map(a=>({value:a.id,label:`${a.codice} — ${a.nome}`}))} />
-
-        {art&&(
-          <div style={{background:C.grigioSfondo,borderRadius:6,padding:"10px 14px",
-            fontSize:12,color:C.grigio,display:"flex",gap:16,flexWrap:"wrap"}}>
-            <span style={{fontWeight:700,color:C.testo}}>{art.nome}</span>
-            <span>Giacenza: <b style={{color:C.testo}}>{fmt(giac)} {art.um}</b></span>
-            {art.pezziScatola&&<span>Pz/sc: <b style={{color:C.testo}}>{art.pezziScatola}</b></span>}
-            {art.scortaMin!=null&&<span>Min: <b style={{color:giac<=art.scortaMin?C.rosso:C.testo}}>{fmt(art.scortaMin)}</b></span>}
-          </div>
-        )}
-
-        {hasSc&&<div style={{display:"flex",gap:8}}>
-          {[["pezzi","Pezzi singoli"],["scatole","Scatole intere"]].map(([v,l])=>(
-            <button key={v} onClick={()=>setModalita(v)} style={{flex:1,padding:"9px",borderRadius:6,
-              cursor:"pointer",fontFamily:"inherit",fontWeight:600,fontSize:12,
-              border:`1.5px solid ${modalita===v?ac:C.bordo}`,
-              background:modalita===v?ac+"11":C.bianco,color:modalita===v?ac:C.grigio}}>{l}</button>
-          ))}
-        </div>}
-
-        {(modalita==="pezzi"||!hasSc)&&(
-          <Inp label={`Quantità (${art?.um||"pz"})`} type="number" min="1" value={quantita} onChange={setQuantita} required />
-        )}
-        {modalita==="scatole"&&hasSc&&(
-          <div>
-            <Inp label="Numero di scatole" type="number" min="1" value={nScatole} onChange={setNScatole} required />
-            {nScatole&&art&&<div style={{fontSize:11,color:ac,marginTop:6,fontWeight:600}}>= {fmt(parseInt(nScatole)*art.pezziScatola)} {art.um} totali</div>}
-          </div>
-        )}
-
-        {/* causale a scelta fissa */}
-        <Sel label="Causale" value={causale} onChange={setCausale} required
-          options={causaliOpts.map(c=>({value:c,label:c}))} />
-
-        {/* data scadenza */}
-        <Inp label="Data di scadenza" type="date" value={scadenza} onChange={setScadenza} required />
-
-        <Inp label="Note" value={note} onChange={setNote} />
-        <ErrBox msg={err} />
-        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:6}}>
-          <Btn variant="ghost" onClick={onClose}>Annulla</Btn>
-          <Btn style={{background:ac,boxShadow:`0 2px 8px ${ac}44`}} onClick={submit}>Conferma {tipo}</Btn>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function NuovoUtenteModal({ utenti, onClose, onSave }) {
-  const [nome,setNome]=useState(""); const [user,setUser]=useState("");
-  const [pass,setPass]=useState(""); const [ruolo,setRuolo]=useState("operatore");
-  const [err,setErr]=useState(""); const [loading,setLoading]=useState(false);
-  const submit=async()=>{
-    setErr("");
-    if(!nome.trim()||!user.trim()||!pass) return setErr("Tutti i campi sono obbligatori.");
-    if(pass.length<6) return setErr("Password minimo 6 caratteri.");
-    if(utenti.find(u=>u.username===user.trim().toLowerCase())) return setErr("Username già esistente.");
-    setLoading(true);
-    onSave({username:user.trim().toLowerCase(),passwordHash:await sha256(pass),nomeCompleto:nome.trim(),ruolo});
-    setLoading(false);
-  };
-  return (
-    <Modal title="Nuovo utente" onClose={onClose}>
-      <div style={{display:"flex",flexDirection:"column",gap:14}}>
-        <Inp label="Nome completo" value={nome} onChange={setNome} required autoFocus />
-        <Inp label="Username" value={user} onChange={setUser} required placeholder="es. mrossi" />
-        <Inp label="Password temporanea" value={pass} onChange={setPass} type="password" required placeholder="minimo 6 caratteri" />
-        <Sel label="Ruolo" value={ruolo} onChange={setRuolo} options={[
-          {value:"operatore",label:"Operatore (solo carico/scarico)"},
-          {value:"admin",label:"Amministratore (accesso completo)"},
-        ]} />
-        <ErrBox msg={err} />
-        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:6}}>
-          <Btn variant="ghost" onClick={onClose}>Annulla</Btn>
-          <Btn onClick={submit} disabled={loading}>{loading?"Creazione…":"Crea utente"}</Btn>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function ResetPassModal({ user, onClose, onSave }) {
-  const [pass,setPass]=useState(""); const [pass2,setPass2]=useState("");
-  const [err,setErr]=useState(""); const [loading,setLoading]=useState(false);
-  const submit=async()=>{
-    setErr("");
-    if(!pass) return setErr("Inserisci la nuova password.");
-    if(pass.length<6) return setErr("Minimo 6 caratteri.");
-    if(pass!==pass2) return setErr("Le password non coincidono.");
-    setLoading(true); onSave(user.id,await sha256(pass)); setLoading(false);
-  };
-  return (
-    <Modal title={`Reset password — ${user.nomeCompleto}`} onClose={onClose}>
-      <div style={{display:"flex",flexDirection:"column",gap:14}}>
-        <Inp label="Nuova password" value={pass} onChange={setPass} type="password" required autoFocus placeholder="minimo 6 caratteri" />
-        <Inp label="Conferma password" value={pass2} onChange={setPass2} type="password" required />
-        <ErrBox msg={err} />
-        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:6}}>
-          <Btn variant="ghost" onClick={onClose}>Annulla</Btn>
-          <Btn onClick={submit} disabled={loading}>{loading?"Salvataggio…":"Aggiorna password"}</Btn>
-        </div>
-      </div>
-    </Modal>
-  );
-}
+// ════════════════════════════════════════════════════════════════
+// START
+// ════════════════════════════════════════════════════════════════
+init();
+</script>
+</body>
+</html>
