@@ -1093,113 +1093,176 @@ function openCameraFor(inputId, callback){
         <span style="color:#fff;font-weight:700;font-size:14px;">📷 Scansione barcode</span>
         <button id="cam-close" style="background:none;border:none;color:#fff;cursor:pointer;font-size:20px;">×</button>
       </div>
-      <div style="position:relative;background:#000;">
+      <div style="position:relative;background:#000;min-height:200px;">
         <video id="cam-video" autoplay playsinline muted style="width:100%;max-height:320px;display:block;object-fit:cover;"></video>
         <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
-          <div style="width:220px;height:120px;border:2px solid var(--verde);border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,.45);"></div>
+          <div style="width:220px;height:120px;border:2px solid #9DBF60;border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,.5);"></div>
         </div>
-        <canvas id="cam-canvas" style="display:none;"></canvas>
       </div>
-      <div id="cam-status" style="padding:12px 16px;text-align:center;font-size:12px;color:var(--grigio);">Avvio fotocamera…</div>
-      <div style="padding:0 16px 16px;display:flex;justify-content:center;">
-        <button id="cam-cancel" style="background:transparent;color:var(--grigio);border:1px solid var(--bordo);border-radius:6px;font-family:inherit;font-weight:600;font-size:13px;padding:10px 22px;cursor:pointer;">Annulla</button>
+      <div id="cam-status" style="padding:10px 16px;text-align:center;font-size:12px;color:#77797A;min-height:40px;">Avvio fotocamera…</div>
+      <div id="cam-debug" style="padding:0 16px 4px;text-align:center;font-size:10px;color:#c8c9ca;font-family:monospace;"></div>
+      <div style="padding:8px 16px 16px;display:flex;justify-content:center;">
+        <button id="cam-cancel" style="background:transparent;color:#77797A;border:1px solid #e2e4e2;border-radius:6px;font-family:inherit;font-weight:600;font-size:13px;padding:10px 22px;cursor:pointer;">Annulla</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
 
-  let stream=null, scanning=true;
-  const setStatus=t=>{ const el=overlay.querySelector('#cam-status'); if(el) el.textContent=t; };
-  const close=()=>{ scanning=false; if(stream) stream.getTracks().forEach(t=>t.stop()); overlay.remove(); };
-  overlay.querySelector('#cam-close').onclick=close;
-  overlay.querySelector('#cam-cancel').onclick=close;
+  let stream=null, scanning=true, frameCount=0;
+  const setStatus = t => { const el=overlay.querySelector('#cam-status'); if(el) el.textContent=t; };
+  const setDebug  = t => { const el=overlay.querySelector('#cam-debug');  if(el) el.textContent=t; };
+  const close = () => {
+    scanning=false;
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    overlay.remove();
+  };
+  overlay.querySelector('#cam-close').onclick = close;
+  overlay.querySelector('#cam-cancel').onclick = close;
 
   (async()=>{
     try{
-      // getUserMedia chiamato immediatamente (Safari iOS richiede gesto utente diretto)
       stream = await navigator.mediaDevices.getUserMedia({
-        video:{ facingMode:'environment', width:{ideal:1280}, height:{ideal:720} }
+        video:{ facingMode:'environment', width:{ideal:1920}, height:{ideal:1080} }
       });
-      const video=overlay.querySelector('#cam-video');
-      video.srcObject=stream;
-      await video.play().catch(()=>{});
-      setStatus('Punta la fotocamera sul barcode');
 
-      // Strategia 1: BarcodeDetector API nativa (Chrome 83+, Edge 83+, Safari 17.4+)
-      if(window.BarcodeDetector){
-        const detector=new BarcodeDetector({
-          formats:['ean_13','ean_8','qr_code','code_128','code_39','itf','upc_a','upc_e','data_matrix']
-        });
-        const tick=async()=>{
+      const video = overlay.querySelector('#cam-video');
+      video.srcObject = stream;
+
+      // Aspetta che il video sia pronto
+      await new Promise(res=>{
+        video.onloadedmetadata = () => { video.play().then(res).catch(res); };
+        setTimeout(res, 3000); // timeout di sicurezza
+      });
+
+      const track = stream.getVideoTracks()[0];
+      const settings = track.getSettings();
+      setDebug(`${settings.width}x${settings.height} | ${settings.facingMode||'camera'}`);
+
+      // Tenta autofocus se disponibile
+      if(track.getCapabilities && track.applyConstraints){
+        const caps = track.getCapabilities();
+        if(caps.focusMode && caps.focusMode.includes('continuous')){
+          await track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});
+        }
+      }
+
+      // ── Strategia 1: BarcodeDetector nativa ──────────────────
+      if(typeof BarcodeDetector !== 'undefined'){
+        setStatus('Punta il barcode nel riquadro verde…');
+        setDebug(prev => prev + ' | BarcodeDetector');
+
+        let supported = ['qr_code','ean_13','ean_8','code_128','code_39','itf','upc_a','upc_e','data_matrix','aztec','pdf417'];
+        try {
+          supported = await BarcodeDetector.getSupportedFormats();
+        } catch{}
+
+        const detector = new BarcodeDetector({ formats: supported });
+        let lastTry = 0;
+
+        const tick = async () => {
           if(!scanning) return;
-          try{
-            const results=await detector.detect(video);
-            if(results.length>0){ scanning=false; close(); callback(results[0].rawValue); return; }
-          } catch{}
-          requestAnimationFrame(tick);
+          frameCount++;
+          const now = Date.now();
+          // Prova ogni 200ms (5fps) per non sovraccaricare
+          if(now - lastTry >= 200 && video.readyState >= 2 && video.videoWidth > 0){
+            lastTry = now;
+            try{
+              const results = await detector.detect(video);
+              if(results && results.length > 0){
+                scanning = false;
+                close();
+                callback(results[0].rawValue);
+                return;
+              }
+              if(frameCount % 15 === 0) setDebug(`BarcodeDetector | frame ${frameCount} | nessun codice`);
+            } catch(e){
+              if(frameCount % 15 === 0) setDebug(`BD err: ${e.message}`);
+            }
+          }
+          if(scanning) requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
         return;
       }
 
-      // Strategia 2: ZXing da CDN (fallback per Firefox e browser senza BarcodeDetector)
-      setStatus('Caricamento decoder…');
-      const ZXING_URLS=[
+      // ── Strategia 2: ZXing via CDN multipli ──────────────────
+      setStatus('Caricamento decoder barcode…');
+      const CDNS = [
         'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js',
         'https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js',
+        'https://cdn.jsdelivr.net/npm/@zxing/library/umd/index.min.js',
       ];
+
       if(!window.ZXing){
-        let loaded=false;
-        for(const url of ZXING_URLS){
+        let ok = false;
+        for(const url of CDNS){
           try{
             await new Promise((res,rej)=>{
-              const s=document.createElement('script');
-              s.src=url; s.onload=res;
-              s.onerror=()=>rej(new Error('fail'));
+              const s = document.createElement('script');
+              s.src = url;
+              s.onload = res;
+              s.onerror = ()=>rej(new Error('cdn fail'));
               document.head.appendChild(s);
             });
-            loaded=true; break;
-          } catch{}
+            ok = true;
+            setDebug('ZXing loaded: '+url.split('/')[2]);
+            break;
+          } catch{ continue; }
         }
-        if(!loaded) throw new Error('Decoder non caricabile. Verificare la connessione internet.');
+        if(!ok){
+          setStatus('⚠️ Decoder non disponibile. Prova a digitare il codice manualmente.');
+          return;
+        }
       }
-      setStatus('Punta la fotocamera sul barcode');
-      const ZX=window.ZXing;
-      const hints=new Map();
+
+      setStatus('Punta il barcode nel riquadro verde…');
+      const ZX = window.ZXing;
+      const hints = new Map();
       hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS,[
         ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.EAN_8,
         ZX.BarcodeFormat.QR_CODE, ZX.BarcodeFormat.CODE_128,
         ZX.BarcodeFormat.CODE_39, ZX.BarcodeFormat.DATA_MATRIX,
-        ZX.BarcodeFormat.ITF, ZX.BarcodeFormat.UPC_A,
+        ZX.BarcodeFormat.ITF, ZX.BarcodeFormat.UPC_A, ZX.BarcodeFormat.UPC_E,
+        ZX.BarcodeFormat.AZTEC, ZX.BarcodeFormat.PDF_417,
       ]);
-      hints.set(ZX.DecodeHintType.TRY_HARDER,true);
-      const reader=new ZX.MultiFormatReader(); reader.setHints(hints);
-      const canvas=document.createElement('canvas'); const ctx=canvas.getContext('2d');
-      const tick=()=>{
+      hints.set(ZX.DecodeHintType.TRY_HARDER, true);
+      const reader = new ZX.MultiFormatReader();
+      reader.setHints(hints);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', {willReadFrequently:true});
+
+      let lastTry2 = 0;
+      const tick2 = () => {
         if(!scanning) return;
-        if(video.readyState>=2){
-          canvas.width=video.videoWidth; canvas.height=video.videoHeight;
-          ctx.drawImage(video,0,0);
+        frameCount++;
+        const now = Date.now();
+        if(now - lastTry2 >= 150 && video.readyState >= 2 && video.videoWidth > 0){
+          lastTry2 = now;
+          canvas.width  = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
           try{
-            const img=ctx.getImageData(0,0,canvas.width,canvas.height);
-            const lum=new ZX.RGBLuminanceSource(img.data,canvas.width,canvas.height);
-            const bmp=new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum));
-            const result=reader.decode(bmp);
+            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const lum = new ZX.RGBLuminanceSource(img.data, canvas.width, canvas.height);
+            const bmp = new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum));
+            const result = reader.decode(bmp);
             if(result){ scanning=false; close(); callback(result.getText()); return; }
           } catch{}
+          if(frameCount % 20 === 0) setDebug(`ZXing | frame ${frameCount} | ${canvas.width}x${canvas.height}`);
         }
-        requestAnimationFrame(tick);
+        if(scanning) requestAnimationFrame(tick2);
       };
-      requestAnimationFrame(tick);
+      requestAnimationFrame(tick2);
 
     } catch(e){
-      let msg='Fotocamera non disponibile.';
+      let msg = '⚠️ Fotocamera non disponibile.';
       if(e.name==='NotAllowedError'||e.name==='PermissionDeniedError')
-        msg='Permesso fotocamera negato. Controlla le impostazioni del browser.';
+        msg='⚠️ Permesso fotocamera negato. Controlla le impostazioni del browser.';
       else if(e.name==='NotFoundError')
-        msg='Nessuna fotocamera trovata su questo dispositivo.';
+        msg='⚠️ Nessuna fotocamera trovata su questo dispositivo.';
       else if(e.message)
-        msg=e.message;
+        msg='⚠️ '+e.message;
       setStatus(msg);
+      setDebug(e.name||'');
     }
   })();
 }
