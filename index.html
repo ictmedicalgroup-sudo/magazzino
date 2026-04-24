@@ -1125,6 +1125,14 @@ function movimentoModal(tipo,preselectId,giacenze){
       ? '<select id="mov-scad" disabled style="'+inpStyle()+';opacity:.5;"><option>— seleziona prima l\'articolo —</option></select>'
       : `<input type="date" id="mov-scad" style="${inpStyle()}">`;
 
+  // Toggle scatole pre-renderizzato se articolo già selezionato e ha pezzi per scatola
+  const scToggleInit = selArt && selArt.pezzi_scatola
+    ? `<div style="display:flex;gap:8px;">
+        <button id="sc-pz" onclick="setModalita('pezzi','${selArt.id}')" style="flex:1;padding:9px;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;border:1.5px solid var(--verde);background:var(--verde)11;color:var(--verde);">Pezzi singoli</button>
+        <button id="sc-sc" onclick="setModalita('scatole','${selArt.id}')" style="flex:1;padding:9px;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;border:1.5px solid var(--bordo);background:#fff;color:var(--grigio);">Scatole intere</button>
+       </div>`
+    : '';
+
   return `${modalHeader(tipo==='carico'?'Registra carico':'Registra scarico',ac)}
     <div style="display:flex;flex-direction:column;gap:14px;" id="mov-form">
       <div style="position:relative;">
@@ -1137,7 +1145,7 @@ function movimentoModal(tipo,preselectId,giacenze){
         <select id="mov-art" onchange="movArtChange()" style="${inpStyle()}"><option value="">— seleziona —</option>${artOpts}</select>
       </label>
       <div id="mov-info">${infoBar}</div>
-      <div id="mov-sc-toggle"></div>
+      <div id="mov-sc-toggle">${scToggleInit}</div>
       <div id="mov-qty-wrap">
         <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Quantità <span style="color:var(--verde);">*</span>
           <input type="number" id="mov-qty" min="1" oninput="${tipo==='scarico'?'checkQtyScarico();':''}" style="${inpStyle()}">
