@@ -494,12 +494,9 @@ function renderGiacenze(giacenze,alertList){
   return `
     <div>
       <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end;">
-        <div style="position:relative;flex:1;min-width:200px;max-width:300px;">
-          <input id="giac-search" value="${window._giacSearch||''}" placeholder="🔍  Cerca o scansiona barcode…"
-            oninput="window._giacSearch=this.value;updateGiacenzeTable();"
-            style="${inpStyle()} padding-right:40px;">
-          <button onclick="openCameraFor('giac-search',v=>{window._giacSearch=v;updateGiacenzeTable();})" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:var(--verde-pale);border:1px solid var(--verde-chiaro);border-radius:4px;padding:4px 8px;cursor:pointer;font-size:15px;">📷</button>
-        </div>
+        <input id="giac-search" value="${window._giacSearch||''}" placeholder="🔍  Cerca per codice, barcode o nome…"
+          oninput="window._giacSearch=this.value;updateGiacenzeTable();"
+          style="${inpStyle()};flex:1;min-width:200px;max-width:300px;">
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           ${pillFiltro('tutti','Tutti')}${pillFiltro('alert','⚠ Alert')}${pillFiltro('ok','✓ OK')}
         </div>
@@ -1133,10 +1130,7 @@ function movimentoModal(tipo,preselectId,giacenze){
       <div style="position:relative;">
         <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
           Cerca per barcode o codice
-          <div style="display:flex;gap:8px;">
-            <input id="mov-bc" placeholder="Scansiona o digita…" style="${inpStyle()};flex:1;" oninput="movBarcodeInput(this.value);">
-            <button type="button" onclick="openCameraFor('mov-bc',v=>{document.getElementById('mov-bc').value=v;movBarcodeInput(v);})" style="background:var(--verde-pale);border:1.5px solid var(--verde-chiaro);border-radius:6px;padding:0 14px;cursor:pointer;font-size:18px;">📷</button>
-          </div>
+          <input id="mov-bc" placeholder="Digita codice o barcode…" style="${inpStyle()}" oninput="movBarcodeInput(this.value);">
         </label>
       </div>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Oppure seleziona dalla lista <span style="color:var(--verde);">*</span>
@@ -1308,17 +1302,31 @@ async function submitMovimento(tipo){
   } catch(e){ errEl.innerHTML=errBox(e.message); if(btn){btn.innerHTML=`Conferma ${tipo}`;btn.disabled=false;} }
 }
 
+// Genera il prossimo codice articolo in formato ARTXXX
+function nextCodice(){
+  const nums = state.articoli
+    .map(a => a.codice.match(/^ART(\d+)$/i))
+    .filter(Boolean)
+    .map(m => parseInt(m[1]));
+  const max = nums.length ? Math.max(...nums) : 0;
+  return 'ART' + String(max + 1).padStart(3, '0');
+}
+
 // Articolo
 function articoloModal(art){
   const isEdit=!!art;
+  const autoCodice=isEdit?art.codice:nextCodice();
   return `${modalHeader(isEdit?'Modifica articolo':'Nuovo articolo')}
     <div style="display:flex;flex-direction:column;gap:14px;">
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Codice interno <span style="color:var(--verde);">*</span><input id="art-codice" value="${art?.codice||''}" placeholder="es. ART001" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
+        Codice articolo
+        <input id="art-codice" value="${autoCodice}" readonly
+          style="${inpStyle()};background:var(--grigio-sfondo);color:${isEdit?'var(--testo)':'var(--grigio)'};cursor:default;"
+          title="${isEdit?'':'Codice assegnato automaticamente'}">
+        ${!isEdit?'<span style="font-size:10px;color:var(--grigio-chiaro);margin-top:2px;">Assegnato automaticamente in progressione</span>':''}
+      </label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Barcode / EAN (opzionale)
-        <div style="display:flex;gap:8px;">
-          <input id="art-barcode" value="${art?.barcode||''}" placeholder="Scansiona o digita il barcode" style="${inpStyle()};flex:1;">
-          <button onclick="openCameraFor('art-barcode',v=>{document.getElementById('art-barcode').value=v;})" style="background:var(--verde-pale);border:1.5px solid var(--verde-chiaro);border-radius:6px;padding:0 14px;cursor:pointer;font-size:18px;">📷</button>
-        </div>
+        <input id="art-barcode" value="${art?.barcode||''}" placeholder="Digita il barcode del prodotto" style="${inpStyle()}">
       </label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Descrizione <span style="color:var(--verde);">*</span><input id="art-nome" value="${art?.nome||''}" placeholder="es. Guanti nitrile M" style="${inpStyle()}"></label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Unità di misura
@@ -1343,9 +1351,13 @@ async function submitArticolo(existingId){
   const errEl=document.getElementById('art-err'); errEl.innerHTML='';
   const codice=document.getElementById('art-codice').value.trim().toUpperCase();
   const nome=document.getElementById('art-nome').value.trim();
-  if(!codice||!nome){ errEl.innerHTML=errBox('Codice e descrizione obbligatori.'); return; }
-  const dup=state.articoli.find(a=>a.codice===codice&&a.id!==existingId);
-  if(dup){ errEl.innerHTML=errBox('Codice già esistente.'); return; }
+  if(!codice||!nome){ errEl.innerHTML=errBox('Descrizione obbligatoria.'); return; }
+  // Per i nuovi articoli il codice è auto-generato, non può essere duplicato
+  // Per le modifiche controlliamo solo conflitti con altri articoli
+  if(existingId){
+    const dup=state.articoli.find(a=>a.codice===codice&&a.id!==existingId);
+    if(dup){ errEl.innerHTML=errBox('Codice già esistente.'); return; }
+  }
   const pzscVal = document.getElementById('art-pzsc').value.trim();
   const scminVal = document.getElementById('art-scmin').value.trim();
   const art={
@@ -1423,262 +1435,8 @@ async function submitResetPass(userId){
 
 // ════════════════════════════════════════════════════════════════
 // CAMERA SCANNER
-// ════════════════════════════════════════════════════════════════
-function openCameraFor(inputId, callback){
-  const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:#000000ee;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:1000;padding:16px;';
-  overlay.innerHTML = `
-    <div style="background:#fff;border-radius:12px;overflow:hidden;width:100%;max-width:500px;box-shadow:0 24px 80px #000;">
-      <div style="background:#2c2e2f;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">
-        <span style="color:#fff;font-weight:700;font-size:14px;">📷 Scansione barcode</span>
-        <button id="cam-close" style="background:none;border:none;color:#fff;cursor:pointer;font-size:22px;line-height:1;padding:0 4px;">×</button>
-      </div>
-      <!-- Tab switcher -->
-      <div style="display:flex;border-bottom:1px solid #e2e4e2;">
-        <button id="tab-live" onclick="camSwitchTab('live')" style="flex:1;padding:10px;border:none;background:#eef4e3;color:#9DBF60;font-weight:700;font-size:12px;cursor:pointer;border-bottom:2px solid #9DBF60;">📹 Live</button>
-        <button id="tab-foto" onclick="camSwitchTab('foto')" style="flex:1;padding:10px;border:none;background:#fff;color:#77797A;font-weight:600;font-size:12px;cursor:pointer;border-bottom:2px solid transparent;">📸 Foto</button>
-      </div>
-      <!-- Live scanner -->
-      <div id="panel-live">
-        <div style="position:relative;background:#000;min-height:240px;">
-          <video id="cam-video" autoplay playsinline muted style="width:100%;max-height:300px;display:block;object-fit:cover;"></video>
-          <canvas id="cam-canvas" style="display:none;"></canvas>
-          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
-            <div style="width:75%;max-width:280px;height:120px;border:2.5px solid #9DBF60;border-radius:8px;box-shadow:0 0 0 9999px rgba(0,0,0,.55);"></div>
-          </div>
-        </div>
-        <div id="cam-status" style="padding:10px 16px;text-align:center;font-size:12px;color:#77797A;min-height:34px;">Avvio fotocamera…</div>
-        <div id="cam-debug"  style="padding:0 16px 2px;text-align:center;font-size:10px;color:#c8c9ca;font-family:monospace;min-height:14px;"></div>
-      </div>
-      <!-- Foto upload (fallback) -->
-      <div id="panel-foto" style="display:none;padding:24px 16px;text-align:center;">
-        <div style="font-size:13px;color:#77797A;margin-bottom:16px;">Scatta una foto al barcode o selezionane una dalla galleria</div>
-        <label style="display:inline-block;background:#9DBF60;color:#fff;border-radius:6px;padding:12px 24px;cursor:pointer;font-weight:700;font-size:13px;">
-          📷 Apri fotocamera
-          <input id="cam-file" type="file" accept="image/*" capture="environment" style="display:none;">
-        </label>
-        <div style="margin-top:12px;">
-          <label style="display:inline-block;background:transparent;color:#77797A;border:1px solid #e2e4e2;border-radius:6px;padding:10px 20px;cursor:pointer;font-size:12px;">
-            🖼 Dalla galleria
-            <input id="cam-gallery" type="file" accept="image/*" style="display:none;">
-          </label>
-        </div>
-        <div id="foto-status" style="margin-top:14px;font-size:12px;color:#77797A;min-height:20px;"></div>
-        <canvas id="foto-canvas" style="display:none;max-width:100%;border-radius:6px;margin-top:8px;"></canvas>
-      </div>
-      <div style="padding:8px 16px 16px;display:flex;justify-content:center;">
-        <button id="cam-cancel" style="background:transparent;color:#77797A;border:1px solid #e2e4e2;border-radius:6px;font-family:inherit;font-weight:600;font-size:13px;padding:10px 22px;cursor:pointer;">Annulla</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
 
-  let stream = null, active = true, zxReader = null;
-  const $ = id => overlay.querySelector('#'+id);
-  const st = t => { const el=$('cam-status'); if(el) el.textContent=t; };
-  const db = t => { const el=$('cam-debug');  if(el) el.textContent=t; };
-  const fs = t => { const el=$('foto-status');if(el) el.textContent=t; };
 
-  const done = val => {
-    active = false;
-    if(stream) stream.getTracks().forEach(t=>t.stop());
-    overlay.remove();
-    callback(val);
-  };
-  const cancel = () => {
-    active = false;
-    if(stream) stream.getTracks().forEach(t=>t.stop());
-    overlay.remove();
-  };
-
-  $('cam-close').onclick  = cancel;
-  $('cam-cancel').onclick = cancel;
-
-  // ── Tab switcher ────────────────────────────────────────────────
-  window.camSwitchTab = tab => {
-    $('panel-live').style.display = tab==='live' ? '' : 'none';
-    $('panel-foto').style.display = tab==='foto' ? '' : 'none';
-    $('tab-live').style.cssText += tab==='live'
-      ? 'background:#eef4e3;color:#9DBF60;border-bottom-color:#9DBF60;font-weight:700;'
-      : 'background:#fff;color:#77797A;border-bottom-color:transparent;font-weight:600;';
-    $('tab-foto').style.cssText += tab==='foto'
-      ? 'background:#eef4e3;color:#9DBF60;border-bottom-color:#9DBF60;font-weight:700;'
-      : 'background:#fff;color:#77797A;border-bottom-color:transparent;font-weight:600;';
-  };
-
-  // ── Foto upload handler ─────────────────────────────────────────
-  const handleFileInput = async file => {
-    if(!file) return;
-    fs('Analisi immagine…');
-    const img = new Image();
-    img.onload = async () => {
-      const fc = $('foto-canvas');
-      const scale = Math.min(800/Math.max(img.width,img.height), 1);
-      fc.width  = Math.round(img.width*scale);
-      fc.height = Math.round(img.height*scale);
-      fc.style.display = 'block';
-      const ctx = fc.getContext('2d',{willReadFrequently:true});
-      ctx.drawImage(img, 0, 0, fc.width, fc.height);
-
-      // Prova BarcodeDetector
-      if(typeof BarcodeDetector !== 'undefined'){
-        try {
-          const det = new BarcodeDetector({formats:['ean_13','ean_8','qr_code','code_128','code_39','itf','upc_a','upc_e','data_matrix']});
-          const res = await det.detect(fc);
-          if(res.length){ fs('✅ Letto!'); setTimeout(()=>done(res[0].rawValue),300); return; }
-        } catch{}
-      }
-      // Prova ZXing se disponibile
-      if(zxReader){
-        try {
-          const imgData = ctx.getImageData(0,0,fc.width,fc.height);
-          const lum = new zxReader.ZX.RGBLuminanceSource(imgData.data,fc.width,fc.height);
-          const bmp = new zxReader.ZX.BinaryBitmap(new zxReader.ZX.HybridBinarizer(lum));
-          const r = zxReader.reader.decode(bmp);
-          if(r){ fs('✅ Letto!'); setTimeout(()=>done(r.getText()),300); return; }
-        } catch{}
-      }
-      fs('⚠️ Barcode non trovato. Riprova con foto più nitida e ravvicinata.');
-    };
-    img.src = URL.createObjectURL(file);
-  };
-
-  $('cam-file').onchange    = e => handleFileInput(e.target.files[0]);
-  $('cam-gallery').onchange = e => handleFileInput(e.target.files[0]);
-
-  // ── Live scanner ────────────────────────────────────────────────
-  (async () => {
-    try {
-      // getUserMedia PRIMA di qualsiasi await (requisito Safari iOS)
-      stream = await navigator.mediaDevices.getUserMedia({
-        video:{ facingMode:'environment', width:{ideal:1280,max:1920}, height:{ideal:720,max:1920} }
-      });
-      const video = $('cam-video');
-      video.srcObject = stream;
-      await new Promise(res=>{ video.onloadedmetadata=()=>video.play().then(res).catch(res); setTimeout(res,4000); });
-      if(!active) return;
-      const vw = video.videoWidth||1280, vh = video.videoHeight||720;
-
-      // ── Strategia A: BarcodeDetector nativa ─────────────────────
-      if(typeof BarcodeDetector !== 'undefined'){
-        let fmts=['qr_code','ean_13','ean_8','code_128','code_39','itf','upc_a','upc_e','data_matrix','aztec','pdf417'];
-        try{ fmts=await BarcodeDetector.getSupportedFormats(); }catch{}
-        const det = new BarcodeDetector({formats:fmts});
-        st('Punta il barcode nel riquadro verde…');
-        db(`${vw}x${vh} | BarcodeDetector`);
-        let last=0, n=0;
-        const tick = async()=>{
-          if(!active) return;
-          const now=Date.now();
-          if(now-last>=300 && video.readyState>=2){
-            last=now; n++;
-            try{
-              const r=await det.detect(video);
-              if(r.length){ done(r[0].rawValue); return; }
-            }catch(e){ db(`BD err:${e.message}`); }
-            if(n%6===0) db(`${vw}x${vh} | BD | frame ${n}`);
-          }
-          if(active) requestAnimationFrame(tick);
-        };
-        requestAnimationFrame(tick);
-        return;
-      }
-
-      // ── Strategia B: ZXing UMD con preloading ───────────────────
-      st('Caricamento decoder…');
-      const CDNS=[
-        'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.2/umd/index.min.js',
-        'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js',
-        'https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js',
-      ];
-      if(!window.ZXing){
-        let ok=false;
-        for(const url of CDNS){
-          try{
-            await new Promise((res,rej)=>{
-              const s=document.createElement('script');
-              s.src=url; s.onload=res; s.onerror=()=>rej();
-              document.head.appendChild(s);
-            });
-            ok=true; break;
-          }catch{ continue; }
-        }
-        if(!ok){
-          st('⚠️ Decoder non caricabile. Usa il tab 📸 Foto.');
-          db('Nessuna CDN raggiungibile');
-          return;
-        }
-      }
-
-      const ZX=window.ZXing;
-      const hints=new Map();
-      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS,[
-        ZX.BarcodeFormat.EAN_13,ZX.BarcodeFormat.EAN_8,
-        ZX.BarcodeFormat.QR_CODE,ZX.BarcodeFormat.CODE_128,
-        ZX.BarcodeFormat.CODE_39,ZX.BarcodeFormat.DATA_MATRIX,
-        ZX.BarcodeFormat.ITF,ZX.BarcodeFormat.UPC_A,ZX.BarcodeFormat.UPC_E,
-      ]);
-      hints.set(ZX.DecodeHintType.TRY_HARDER,true);
-      const reader=new ZX.MultiFormatReader();
-      reader.setHints(hints);
-      // Salva riferimento per uso in foto-upload
-      zxReader={ZX,reader};
-
-      const canvas=$('cam-canvas');
-      const ctx=canvas.getContext('2d',{willReadFrequently:true});
-      // ZXing funziona meglio con immagini tra 400-700px
-      const scale=Math.min(640/Math.max(vw,vh),1);
-      const cw=Math.round(vw*scale), ch=Math.round(vh*scale);
-      canvas.width=cw; canvas.height=ch;
-
-      st('Punta il barcode nel riquadro verde…');
-      db(`${vw}x${vh}→${cw}x${ch} | ZXing`);
-
-      const tryZX=(data,w,h)=>{
-        try{
-          const lum=new ZX.RGBLuminanceSource(data,w,h);
-          const bmp=new ZX.BinaryBitmap(new ZX.HybridBinarizer(lum));
-          return reader.decode(bmp).getText();
-        }catch{ return null; }
-      };
-
-      let last=0, n=0;
-      const tick=()=>{
-        if(!active) return;
-        const now=Date.now();
-        if(now-last>=80 && video.readyState>=2){
-          last=now; n++;
-          ctx.drawImage(video,0,0,cw,ch);
-          // 1. Frame intero
-          let r=tryZX(ctx.getImageData(0,0,cw,ch).data,cw,ch);
-          // 2. Crop centrale 70%
-          if(!r){
-            const x=Math.round(cw*.15),y=Math.round(ch*.15);
-            const w2=Math.round(cw*.7),h2=Math.round(ch*.7);
-            if(w2>20&&h2>20) r=tryZX(ctx.getImageData(x,y,w2,h2).data,w2,h2);
-          }
-          // 3. Crop banda orizzontale centrale (ottimale per EAN)
-          if(!r){
-            const y3=Math.round(ch*.3),h3=Math.round(ch*.4);
-            if(h3>10) r=tryZX(ctx.getImageData(0,y3,cw,h3).data,cw,h3);
-          }
-          if(r){ done(r); return; }
-          if(n%20===0) db(`${cw}x${ch} | ZXing | frame ${n}`);
-        }
-        if(active) requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-
-    }catch(e){
-      let msg='⚠️ Fotocamera non disponibile.';
-      if(e.name==='NotAllowedError') msg='⚠️ Permesso negato → Impostazioni → Safari → Fotocamera → Consenti';
-      else if(e.name==='NotFoundError') msg='⚠️ Nessuna fotocamera trovata.';
-      else if(e.message) msg='⚠️ '+e.message;
-      st(msg); db(e.name||'');
-      // In caso di errore fotocamera, switcha automaticamente su tab foto
-      camSwitchTab('foto');
-    }
-  })();
-}
 
 // ════════════════════════════════════════════════════════════════
 // STYLE HELPERS
