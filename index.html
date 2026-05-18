@@ -76,7 +76,13 @@ const db = {
 const uid    = () => Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,10);
 const nowStr = () => new Date().toLocaleString('it-IT');
 const fmt    = n  => Number(n).toLocaleString('it-IT');
-const fmtData= iso => iso ? iso.split('-').reverse().join('/') : '—';
+const NO_SCAD_ISO = '2126-12-31';
+const fmtData = iso => {
+  if(!iso) return '—';
+  if(iso === NO_SCAD_ISO) return 'ND';
+  return iso.split('-').reverse().join('/');
+};
+const isNoScad = iso => iso === NO_SCAD_ISO;
 
 async function sha256(str){
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
@@ -201,19 +207,19 @@ async function doScarico(m){
 }
 
 async function saveArticolo(art, isNew){
-  // Gestione valori numerici: parseInt può restituire NaN, che Supabase rifiuta
   const toInt = v => { const n=parseInt(v); return (!isNaN(n)&&n>0)?n:null; };
   const row = {
-    id:           art.id||uid(),
-    codice:       art.codice,
-    barcode:      art.barcode||null,
-    nome:         art.nome,
-    um:           art.um,
+    id:            art.id||uid(),
+    codice:        art.codice,
+    barcode:       art.barcode||null,
+    nome:          art.nome,
+    um:            art.um,
+    tipo_prodotto: art.tipo_prodotto||null,
+    frigo:         art.frigo===true||art.frigo==='true'||false,
     pezzi_scatola: toInt(art.pezzi_scatola),
-    scorta_min:    toInt(art.scorta_min)!==null ? toInt(art.scorta_min) : (toInt(art.scorta_min)===0?0:null),
-    created_at:   art.created_at||nowStr()
+    scorta_min:    null,
+    created_at:    art.created_at||nowStr()
   };
-  // scorta_min può essere 0, quindi gestiamo separatamente
   const sm = parseInt(art.scorta_min);
   row.scorta_min = (!isNaN(sm) && sm>=0) ? sm : null;
   if(isNew) await db.insert('magazzino_articoli',row);
@@ -510,7 +516,7 @@ function mobileGiacenzaCard(g){
   const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
   return `<div style="background:#fff;border:1px solid ${sotto?'var(--rosso)':'var(--bordo)'};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-      <div>${pill(g.art.codice,'var(--grigio)')}<div style="font-weight:600;font-size:14px;margin-top:6px;">${g.art.nome}</div></div>
+      <div>${pill(g.art.codice,'var(--grigio)')}<div style="font-weight:600;font-size:14px;margin-top:6px;">${g.art.nome}${artBadges(g.art)}</div></div>
       <div style="text-align:right;"><div style="font-weight:700;font-size:22px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</div><div style="font-size:11px;color:var(--grigio);">${g.art.um}</div></div>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
@@ -529,7 +535,7 @@ function desktopGiacenzaRow(g){
   return `<tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
     <td style="padding:11px 14px;">${pill(g.art.codice,'var(--grigio)')}</td>
     <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${g.art.barcode||'—'}</td>
-    <td style="padding:11px 14px;font-weight:600;">${g.art.nome}</td>
+    <td style="padding:11px 14px;font-weight:600;">${g.art.nome}${artBadges(g.art)}</td>
     <td style="padding:11px 14px;color:var(--grigio);">${g.art.um}</td>
     <td style="padding:11px 14px;"><span style="font-weight:700;font-size:15px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</span>${pzSc}</td>
     <td style="padding:11px 14px;color:var(--grigio);">${g.art.pezzi_scatola||'—'}</td>
@@ -695,7 +701,7 @@ function updateMovimentiTable(){
             <td style="padding:10px 14px;"><span style="color:var(--verde);font-size:11px;margin-right:6px;">${a?.codice||'?'}</span><span style="font-weight:600;">${a?.nome||'?'}</span></td>
             <td style="padding:10px 14px;"><span style="font-weight:700;color:${m.tipo==='carico'?'var(--verde-scuro)':'var(--rosso)'};">${m.tipo==='carico'?'+':'-'}${fmt(m.quantita)}</span><span style="color:var(--grigio-chiaro);font-size:11px;margin-left:4px;">${a?.um||''}</span></td>
             <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${m.causale||'—'}</td>
-            <td style="padding:10px 14px;font-size:12px;font-weight:${fmtSc?600:400};color:${fmtSc?'var(--testo)':'var(--grigio-chiaro)'};">${fmtSc||'—'}</td>
+            <td style="padding:10px 14px;font-size:12px;font-weight:${m.scadenza&&!isNoScad(m.scadenza)?600:400};color:${m.scadenza&&!isNoScad(m.scadenza)?'var(--testo)':'var(--grigio)'};">${m.scadenza?fmtData(m.scadenza):'—'}</td>
             <td style="padding:10px 14px;color:var(--grigio);font-size:11px;">${m.note||'—'}</td>
           </tr>`;}).join('')}
         </tbody>
@@ -735,7 +741,8 @@ function renderArticoli(giacenze){
     <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
       <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
-      <td style="padding:11px 14px;font-weight:600;">${a.nome}</td>
+      <td style="padding:11px 14px;font-size:11px;color:var(--grigio);">${a.tipo_prodotto||'<span style=\"color:var(--grigio-chiaro);">—</span>'}</td>
+      <td style="padding:11px 14px;font-weight:600;">${a.nome}${artBadges(a)}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
       <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
@@ -759,7 +766,7 @@ function renderArticoli(giacenze){
         <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
           <table style="width:100%;border-collapse:collapse;font-size:13px;">
             <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-              ${['Codice','Barcode','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+              ${['Codice','Barcode','Tipo','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
             </tr></thead>
             <tbody>${rows}</tbody>
           </table>
@@ -790,7 +797,8 @@ function updateArticoliTable(){
     <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
       <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
-      <td style="padding:11px 14px;font-weight:600;">${a.nome}</td>
+      <td style="padding:11px 14px;font-size:11px;color:var(--grigio);">${a.tipo_prodotto||'<span style=\"color:var(--grigio-chiaro);">—</span>'}</td>
+      <td style="padding:11px 14px;font-weight:600;">${a.nome}${artBadges(a)}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
       <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
@@ -803,7 +811,7 @@ function updateArticoliTable(){
   wrap.innerHTML=`<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-        ${['Codice','Barcode','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+        ${['Codice','Barcode','Tipo','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
@@ -846,11 +854,12 @@ function renderScadenze(){
   righe.forEach(r=>{ if(!gruppi[r.scadenza]) gruppi[r.scadenza]=[]; gruppi[r.scadenza].push(r); });
 
   const statoSc=iso=>{
+    if(isNoScad(iso)) return {label:'NO SCADENZA', color:'var(--grigio)', bg:'var(--grigio-sfondo)'};
     const d=new Date(iso); d.setHours(0,0,0,0);
     const diff=Math.round((d-today)/86400000);
-    if(diff<0)   return {label:'SCADUTO',       color:'var(--rosso)',  bg:'var(--rosso-chiaro)'};
+    if(diff<0)   return {label:'SCADUTO',        color:'var(--rosso)',  bg:'var(--rosso-chiaro)'};
     if(diff<=30) return {label:`tra ${diff} gg`, color:'var(--arancio)',bg:'var(--arancio-chiaro)'};
-    return              {label:`tra ${diff} gg`, color:'var(--verde)', bg:'var(--verde-pale)'};
+    return              {label:`tra ${diff} gg`, color:'var(--verde)',  bg:'var(--verde-pale)'};
   };
 
   // Unica tabella con colonna "Scadenza" — colonne perfettamente allineate tra i gruppi
@@ -861,7 +870,7 @@ function renderScadenze(){
       <tr style="border-bottom:1px solid var(--bordo);background:${s.label==='SCADUTO'?'var(--rosso-chiaro)':'transparent'};"
         onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
         <td style="padding:10px 14px;white-space:nowrap;">
-          <div style="font-weight:700;font-size:13px;">${fmtData(l.scadenza)}</div>
+          <div style="font-weight:700;font-size:13px;">${isNoScad(l.scadenza)?'Senza scadenza':fmtData(l.scadenza)}</div>
           <div style="margin-top:3px;display:inline-block;background:${s.bg};color:${s.color};border:1px solid ${s.color}44;border-radius:20px;font-size:9px;font-weight:700;padding:1px 8px;letter-spacing:.8px;">${s.label}</div>
         </td>
         <td style="padding:10px 14px;">${pill(l.art.codice,'var(--grigio)')}</td>
@@ -1123,7 +1132,13 @@ function movimentoModal(tipo,preselectId,giacenze){
     ? buildScadenzaSelect(selArt.id)
     : tipo==='scarico'
       ? '<select id="mov-scad" disabled style="'+inpStyle()+';opacity:.5;"><option>— seleziona prima l\'articolo —</option></select>'
-      : `<input type="date" id="mov-scad" style="${inpStyle()}">`;
+      : `<div style="display:flex;flex-direction:column;gap:8px;">
+          <input type="date" id="mov-scad" style="${inpStyle()}" onchange="document.getElementById('cb-no-scad').checked=false;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--grigio);cursor:pointer;padding:8px 12px;background:var(--grigio-sfondo);border-radius:6px;border:1px solid var(--bordo);">
+            <input type="checkbox" id="cb-no-scad" onchange="toggleNoScad(this.checked)" style="width:15px;height:15px;cursor:pointer;accent-color:var(--verde);">
+            Senza scadenza
+          </label>
+        </div>`;
 
   // Toggle scatole pre-renderizzato se articolo già selezionato e ha pezzi per scatola
   const scToggleInit = selArt && selArt.pezzi_scatola
@@ -1170,6 +1185,13 @@ function movimentoModal(tipo,preselectId,giacenze){
     </div>`;
 }
 
+function toggleNoScad(checked){
+  const inp=document.getElementById('mov-scad');
+  if(!inp) return;
+  if(checked){ inp.value=''; inp.disabled=true; inp.style.opacity='.4'; }
+  else { inp.disabled=false; inp.style.opacity='1'; }
+}
+
 // Costruisce la select delle scadenze disponibili per un articolo (scarico)
 function buildScadenzaSelect(artId){
   const lotti=calcLottiPerArticolo(artId);
@@ -1178,20 +1200,22 @@ function buildScadenzaSelect(artId){
   if(!sorted.length){
     return `<select id="mov-scad" disabled style="${inpStyle()};opacity:.5;"><option>Nessun lotto disponibile</option></select>`;
   }
-  const opts=sorted.map(([data,pz])=>`<option value="${data}">${fmtData(data)} — disponibili: ${fmt(pz)} ${art?.um||''}</option>`).join('');
+  const opts=sorted.map(([data,pz])=>`<option value="${data}">${isNoScad(data)?'Senza scadenza':fmtData(data)} — disponibili: ${fmt(pz)} ${art?.um||''}</option>`).join('');
   return `<select id="mov-scad" onchange="movScadChange('${artId}')" style="${inpStyle()}"><option value="">— seleziona lotto —</option>${opts}</select>`;
 }
 
 // Aggiorna info lotto e verifica quantità quando si sceglie la scadenza
 function movScadChange(artId){
-  const scad=document.getElementById('mov-scad')?.value;
+  const noScad=document.getElementById('cb-no-scad')?.checked||false;
+  const scad=noScad?NO_SCAD_ISO:(document.getElementById('mov-scad')?.value||'');
   if(!scad){ document.getElementById('mov-lotto-info').innerHTML=''; return; }
   const lotti=calcLottiPerArticolo(artId);
   const art=state.articoli.find(a=>a.id===artId);
   const disp=lotti[scad]??0;
+  const scadLabel=isNoScad(scad)?'Senza scadenza':fmtData(scad);
   document.getElementById('mov-lotto-info').innerHTML=`
     <div style="background:var(--verde-pale);border:1px solid var(--verde-chiaro);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio-scuro);">
-      Disponibili per questo lotto: <b style="color:var(--testo);font-size:14px;">${fmt(disp)} ${art?.um||''}</b>
+      Disponibili per questo lotto (${scadLabel}): <b style="color:var(--testo);font-size:14px;">${fmt(disp)} ${art?.um||''}</b>
     </div>`;
   // Imposta il max sull'input quantità
   const qtyEl=document.getElementById('mov-qty');
@@ -1201,7 +1225,8 @@ function movScadChange(artId){
 
 // Controlla quantità scarico vs disponibilità lotto e blocca il pulsante
 function checkQtyScarico(){
-  const scad=document.getElementById('mov-scad')?.value;
+  const noScad=document.getElementById('cb-no-scad')?.checked||false;
+  const scad=noScad?NO_SCAD_ISO:(document.getElementById('mov-scad')?.value||'');
   const artId=document.getElementById('mov-art')?.value;
   const qtyEl=document.getElementById('mov-qty');
   const btn=document.getElementById('mov-submit-btn');
@@ -1285,7 +1310,8 @@ async function submitMovimento(tipo){
   const artId=document.getElementById('mov-art')?.value;
   const art=state.articoli.find(a=>a.id===artId);
   const qtyEl=document.getElementById('mov-qty');
-  const scad=document.getElementById('mov-scad')?.value;
+  const noScad=document.getElementById('cb-no-scad')?.checked||false;
+  const scad=noScad?NO_SCAD_ISO:(document.getElementById('mov-scad')?.value||'');
   const causale=document.getElementById('mov-causale')?.value;
   const note=document.getElementById('mov-note')?.value;
   if(!artId){ errEl.innerHTML=errBox('Seleziona un articolo.'); return; }
@@ -1320,6 +1346,14 @@ function nextCodice(){
   return 'ART' + String(max + 1).padStart(3, '0');
 }
 
+const TIPO_PRODOTTO_OPTS = ['Farmaco','Dispositivo medico','Varie'];
+function artBadges(art){
+  let b='';
+  if(art.frigo) b+=`<span style="background:var(--verde);color:#fff;border-radius:4px;font-size:9px;font-weight:700;padding:2px 6px;letter-spacing:.8px;text-transform:uppercase;margin-left:6px;vertical-align:middle;">❄ Frigo</span>`;
+  if(art.tipo_prodotto) b+=`<span style="background:var(--grigio-sfondo);color:var(--grigio);border:1px solid var(--bordo);border-radius:4px;font-size:9px;font-weight:700;padding:2px 6px;letter-spacing:.5px;margin-left:4px;vertical-align:middle;">${art.tipo_prodotto}</span>`;
+  return b;
+}
+
 // Articolo
 function articoloModal(art){
   const isEdit=!!art;
@@ -1341,6 +1375,16 @@ function articoloModal(art){
         <select id="art-um" style="${inpStyle()}">
           ${['pz','conf','kg','g','l','ml','m'].map(u=>`<option value="${u}" ${(art?.um||'pz')===u?'selected':''}>${u}</option>`).join('')}
         </select>
+      </label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Tipo prodotto
+        <select id="art-tipo" style="${inpStyle()}">
+          <option value="">— nessuno —</option>
+          ${TIPO_PRODOTTO_OPTS.map(t=>`<option value="${t}" ${art?.tipo_prodotto===t?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:10px;font-size:12px;color:var(--grigio-scuro);font-weight:600;cursor:pointer;padding:10px 12px;background:var(--grigio-sfondo);border-radius:6px;border:1px solid var(--bordo);">
+        <input type="checkbox" id="art-frigo" ${art?.frigo?'checked':''} style="width:15px;height:15px;cursor:pointer;accent-color:var(--verde);">
+        ❄ Conservazione in frigorifero
       </label>
       <div style="border-top:1px solid var(--bordo);padding-top:14px;display:flex;flex-direction:column;gap:12px;">
         <div style="font-size:10px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;">Scatola &amp; Scorta</div>
@@ -1372,6 +1416,8 @@ async function submitArticolo(existingId){
     id:existingId||uid(), codice,
     barcode:document.getElementById('art-barcode').value.trim()||null,
     nome, um:document.getElementById('art-um').value,
+    tipo_prodotto:document.getElementById('art-tipo').value||null,
+    frigo:document.getElementById('art-frigo').checked,
     pezzi_scatola: pzscVal!=='' ? parseInt(pzscVal) : null,
     scorta_min:    scminVal!=='' ? parseInt(scminVal) : null,
     created_at:nowStr()
