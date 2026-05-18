@@ -131,16 +131,18 @@ function calcGiacenze(){
 // DATA LOADING
 // ════════════════════════════════════════════════════════════════
 async function loadAll(){
-  const [articoli, movimenti, utenti, log] = await Promise.all([
+  const [articoli, movimenti, utenti, log, tipi] = await Promise.all([
     db.select('magazzino_articoli','order=codice.asc'),
     db.select('magazzino_movimenti','order=data.desc'),
     db.select('magazzino_utenti','order=created_at.asc'),
     db.select('magazzino_log_accessi','order=data.desc&limit=500'),
+    db.select('magazzino_articoli_tipo','order=nome.asc'),
   ]);
   state.articoli   = articoli;
   state.movimenti  = movimenti;
   state.utenti     = utenti;
   state.logEntries = log;
+  state.tipi       = tipi;
   render();
 }
 
