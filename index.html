@@ -83,6 +83,7 @@ const fmtData = iso => {
   return iso.split('-').reverse().join('/');
 };
 const isNoScad = iso => iso === NO_SCAD_ISO;
+const tipoNome = id => state.tipi.find(t=>t.id===id)?.nome || '—';
 
 async function sha256(str){
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
@@ -103,6 +104,7 @@ let state = {
   utente: null,
   articoli: [],
   movimenti: [],
+  tipi: [],
   logEntries: [],
   utenti: [],
   tab: 'Giacenze',
@@ -214,7 +216,7 @@ async function saveArticolo(art, isNew){
     barcode:       art.barcode||null,
     nome:          art.nome,
     um:            art.um,
-    tipo_prodotto: art.tipo_prodotto||null,
+    tipo_id:       art.tipo_id||null,
     frigo:         art.frigo===true||art.frigo==='true'||false,
     pezzi_scatola: toInt(art.pezzi_scatola),
     scorta_min:    null,
@@ -374,7 +376,7 @@ function bindLogin(){
 
 // ── Main App ──────────────────────────────────────────────────
 const TABS_USER  = ['Giacenze','Movimenti'];
-const TABS_ADMIN = ['Giacenze','Movimenti','Articoli','Scadenze','Utenti','Log'];
+const TABS_ADMIN = ['Giacenze','Movimenti','Articoli','Scadenze','Tipi','Utenti','Log'];
 const CAUSALI_CARICO  = ['Acquisto','Ricezione da altra sede'];
 const CAUSALI_SCARICO = ['Uso','Reso','Scadenza','Invio ad altra sede'];
 
@@ -394,6 +396,7 @@ function mainHTML(){
   else if(state.tab==='Movimenti') content=renderMovimenti();
   else if(state.tab==='Articoli'&&isAdmin)  content=renderArticoli(giacenze);
   else if(state.tab==='Scadenze'&&isAdmin)  content=renderScadenze();
+  else if(state.tab==='Tipi'&&isAdmin)      content=renderTipi();
   else if(state.tab==='Utenti'&&isAdmin)    content=renderUtenti();
   else if(state.tab==='Log'&&isAdmin)       content=renderLog();
 
@@ -741,7 +744,7 @@ function renderArticoli(giacenze){
     <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
       <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
-      <td style="padding:11px 14px;font-size:11px;color:var(--grigio);">${a.tipo_prodotto||'<span style=\"color:var(--grigio-chiaro);">—</span>'}</td>
+      <td style="padding:11px 14px;font-size:11px;color:var(--grigio);">${a.tipo_id?tipoNome(a.tipo_id):'<span style=\"color:var(--grigio-chiaro);">—</span>'}</td>
       <td style="padding:11px 14px;font-weight:600;">${a.nome}${artBadges(a)}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
@@ -797,7 +800,7 @@ function updateArticoliTable(){
     <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
       <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
-      <td style="padding:11px 14px;font-size:11px;color:var(--grigio);">${a.tipo_prodotto||'<span style=\"color:var(--grigio-chiaro);">—</span>'}</td>
+      <td style="padding:11px 14px;font-size:11px;color:var(--grigio);">${a.tipo_id?tipoNome(a.tipo_id):'<span style=\"color:var(--grigio-chiaro);">—</span>'}</td>
       <td style="padding:11px 14px;font-weight:600;">${a.nome}${artBadges(a)}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
@@ -897,6 +900,53 @@ function renderScadenze(){
       </table>
     </div>
   </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TAB: TIPI PRODOTTO
+// ─────────────────────────────────────────────────────────────────────────────
+function renderTipi(){
+  const rows = state.tipi.map(t => {
+    const used = state.articoli.filter(a=>a.tipo_id===t.id).length;
+    return `
+      <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+        <td style="padding:11px 14px;font-weight:600;">${t.nome}</td>
+        <td style="padding:11px 14px;color:var(--grigio);font-size:12px;">${used} articol${used===1?'o':'i'}</td>
+        <td style="padding:11px 14px;">
+          <div style="display:flex;gap:6px;">
+            <button onclick="openModal({type:'edit_tipo',tipo:${JSON.stringify(t).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎ Rinomina</button>
+            <button onclick="confirmDeleteTipo('${t.id}',${used})" style="${btnStyle('danger',true)}">✕</button>
+          </div>
+        </td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+        <button onclick="openModal({type:'nuovo_tipo'})" style="${btnStyle('primary',false)}">+ Nuovo tipo</button>
+      </div>
+      ${state.tipi.length===0
+        ? '<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun tipo definito. Aggiungine uno per iniziare.</div>'
+        : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+            <table style="width:100%;border-collapse:collapse;font-size:13px;">
+              <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+                ${['Tipo prodotto','Utilizzo',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`
+      }
+    </div>`;
+}
+
+function confirmDeleteTipo(id, used){
+  if(used>0){ showToast(`Impossibile eliminare: utilizzato da ${used} articol${used===1?'o':'i'}.`,'error'); return; }
+  if(!confirm('Eliminare questo tipo?')) return;
+  db.delete('magazzino_articoli_tipo',`id=eq.${id}`)
+    .then(()=>loadAll())
+    .then(()=>showToast('Tipo eliminato.'))
+    .catch(e=>showToast(e.message,'error'));
 }
 
 function renderUtenti(){
@@ -1064,6 +1114,8 @@ function renderModal(giacenze){
   let html='';
   if(m.type==='quick_scan') html=quickScanModal(m.art,giacenze);
   else if(m.type==='carico'||m.type==='scarico') html=movimentoModal(m.type,m.preselectId,giacenze);
+  else if(m.type==='nuovo_tipo') html=tipoModal(null);
+  else if(m.type==='edit_tipo') html=tipoModal(m.tipo);
   else if(m.type==='nuovo_art'||m.type==='edit_art') html=articoloModal(m.art);
   else if(m.type==='nuovo_utente') html=nuovoUtenteModal();
   else if(m.type==='reset_pass') html=resetPassModal(m.userId,m.userName);
@@ -1346,12 +1398,42 @@ function nextCodice(){
   return 'ART' + String(max + 1).padStart(3, '0');
 }
 
-const TIPO_PRODOTTO_OPTS = ['Farmaco','Dispositivo medico','Varie'];
 function artBadges(art){
   let b='';
   if(art.frigo) b+=`<span style="background:var(--verde);color:#fff;border-radius:4px;font-size:9px;font-weight:700;padding:2px 6px;letter-spacing:.8px;text-transform:uppercase;margin-left:6px;vertical-align:middle;">❄ Frigo</span>`;
-  if(art.tipo_prodotto) b+=`<span style="background:var(--grigio-sfondo);color:var(--grigio);border:1px solid var(--bordo);border-radius:4px;font-size:9px;font-weight:700;padding:2px 6px;letter-spacing:.5px;margin-left:4px;vertical-align:middle;">${art.tipo_prodotto}</span>`;
+  if(art.tipo_id){const tn=tipoNome(art.tipo_id); b+=`<span style="background:var(--grigio-sfondo);color:var(--grigio);border:1px solid var(--bordo);border-radius:4px;font-size:9px;font-weight:700;padding:2px 6px;letter-spacing:.5px;margin-left:4px;vertical-align:middle;">${tn}</span>`;}
   return b;
+}
+
+// Tipo prodotto modal
+function tipoModal(tipo){
+  const isEdit=!!tipo;
+  return `${modalHeader(isEdit?'Rinomina tipo':'Nuovo tipo prodotto')}
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
+        Nome tipo <span style="color:var(--verde);">*</span>
+        <input id="tipo-nome" value="${tipo?.nome||''}" placeholder="es. Farmaco, Dispositivo medico…"
+          style="${inpStyle()}" autofocus>
+      </label>
+      <div id="tipo-err"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
+        <button onclick="submitTipo(${isEdit?`'${tipo.id}'`:'null'})" style="${btnStyle('primary',false)}">${isEdit?'Salva':'Crea tipo'}</button>
+      </div>
+    </div>`;
+}
+
+async function submitTipo(existingId){
+  const errEl=document.getElementById('tipo-err'); errEl.innerHTML='';
+  const nome=document.getElementById('tipo-nome').value.trim();
+  if(!nome){ errEl.innerHTML=errBox('Il nome è obbligatorio.'); return; }
+  const dup=state.tipi.find(t=>t.nome.toLowerCase()===nome.toLowerCase()&&t.id!==existingId);
+  if(dup){ errEl.innerHTML=errBox('Tipo già esistente.'); return; }
+  try{
+    if(existingId) await db.update('magazzino_articoli_tipo',{nome},`id=eq.${existingId}`);
+    else await db.insert('magazzino_articoli_tipo',{id:uid(),nome});
+    await loadAll(); closeModal(); showToast(existingId?'Tipo aggiornato.':'Tipo creato.');
+  }catch(e){ errEl.innerHTML=errBox(e.message); }
 }
 
 // Articolo
@@ -1379,7 +1461,7 @@ function articoloModal(art){
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Tipo prodotto
         <select id="art-tipo" style="${inpStyle()}">
           <option value="">— nessuno —</option>
-          ${TIPO_PRODOTTO_OPTS.map(t=>`<option value="${t}" ${art?.tipo_prodotto===t?'selected':''}>${t}</option>`).join('')}
+          ${state.tipi.map(t=>`<option value="${t.id}" ${art?.tipo_id===t.id?'selected':''}>${t.nome}</option>`).join('')}
         </select>
       </label>
       <label style="display:flex;align-items:center;gap:10px;font-size:12px;color:var(--grigio-scuro);font-weight:600;cursor:pointer;padding:10px 12px;background:var(--grigio-sfondo);border-radius:6px;border:1px solid var(--bordo);">
@@ -1416,7 +1498,7 @@ async function submitArticolo(existingId){
     id:existingId||uid(), codice,
     barcode:document.getElementById('art-barcode').value.trim()||null,
     nome, um:document.getElementById('art-um').value,
-    tipo_prodotto:document.getElementById('art-tipo').value||null,
+    tipo_id:document.getElementById('art-tipo').value||null,
     frigo:document.getElementById('art-frigo').checked,
     pezzi_scatola: pzscVal!=='' ? parseInt(pzscVal) : null,
     scorta_min:    scminVal!=='' ? parseInt(scminVal) : null,
