@@ -124,10 +124,10 @@ function calcGiacenze(){
 // ════════════════════════════════════════════════════════════════
 async function loadAll(){
   const [articoli, movimenti, utenti, log] = await Promise.all([
-    db.select('articoli','order=codice.asc'),
-    db.select('movimenti','order=data.desc'),
-    db.select('utenti','order=created_at.asc'),
-    db.select('log_accessi','order=data.desc&limit=500'),
+    db.select('magazzino_articoli','order=codice.asc'),
+    db.select('magazzino_movimenti','order=data.desc'),
+    db.select('magazzino_utenti','order=created_at.asc'),
+    db.select('magazzino_log_accessi','order=data.desc&limit=500'),
   ]);
   state.articoli   = articoli;
   state.movimenti  = movimenti;
@@ -138,7 +138,7 @@ async function loadAll(){
 
 async function init(){
   try {
-    const utenti = await db.select('utenti','limit=1');
+    const utenti = await db.select('magazzino_utenti','limit=1');
     if(!utenti.length){ state.phase='setup'; render(); return; }
     state.phase='login'; render();
   } catch(e){
@@ -154,24 +154,24 @@ async function doSetup(nome,username,pass){
   const hash = await sha256(pass);
   const u = {id:uid(),username:username.toLowerCase().trim(),password_hash:hash,
     nome_completo:nome.trim(),ruolo:'admin',attivo:true,created_at:nowStr()};
-  await db.insert('utenti',u);
+  await db.insert('magazzino_utenti',u);
   state.utente = u; state.phase='app';
   await loadAll();
 }
 
 async function doLogin(username,pass){
-  const utenti = await db.select('utenti',`username=eq.${username.toLowerCase().trim()}`);
+  const utenti = await db.select('magazzino_utenti',`username=eq.${username.toLowerCase().trim()}`);
   const u = utenti[0];
   if(!u||!u.attivo) throw new Error('Utente non trovato o disabilitato.');
   const hash = await sha256(pass);
   if(hash!==u.password_hash) throw new Error('Password errata.');
-  await db.insert('log_accessi',{id:uid(),tipo:'login',utente:u.username,nome_completo:u.nome_completo,data:nowStr()});
+  await db.insert('magazzino_log_accessi',{id:uid(),tipo:'login',utente:u.username,nome_completo:u.nome_completo,data:nowStr()});
   state.utente=u; state.phase='app';
   await loadAll();
 }
 
 async function doLogout(){
-  await db.insert('log_accessi',{id:uid(),tipo:'logout',utente:state.utente.username,nome_completo:state.utente.nome_completo,data:nowStr()});
+  await db.insert('magazzino_log_accessi',{id:uid(),tipo:'logout',utente:state.utente.username,nome_completo:state.utente.nome_completo,data:nowStr()});
   state.utente=null; state.phase='login'; state.tab='Giacenze';
   render();
 }
@@ -181,8 +181,8 @@ async function doCarico(m){
     causale:m.causale,scadenza:m.scadenza||null,note:m.note||null,
     is_scatola:m.isScatola||false,n_scatole:m.nScatole||null,
     utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr()};
-  await db.insert('movimenti',mov);
-  await db.insert('log_accessi',{id:uid(),tipo:'carico',utente:state.utente.username,
+  await db.insert('magazzino_movimenti',mov);
+  await db.insert('magazzino_log_accessi',{id:uid(),tipo:'carico',utente:state.utente.username,
     nome_completo:state.utente.nome_completo,articolo_id:m.articoloId,
     quantita:m.quantita,causale:m.causale,data:nowStr()});
   await loadAll();
@@ -193,8 +193,8 @@ async function doScarico(m){
     causale:m.causale,scadenza:m.scadenza||null,note:m.note||null,
     is_scatola:m.isScatola||false,n_scatole:m.nScatole||null,
     utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr()};
-  await db.insert('movimenti',mov);
-  await db.insert('log_accessi',{id:uid(),tipo:'scarico',utente:state.utente.username,
+  await db.insert('magazzino_movimenti',mov);
+  await db.insert('magazzino_log_accessi',{id:uid(),tipo:'scarico',utente:state.utente.username,
     nome_completo:state.utente.nome_completo,articolo_id:m.articoloId,
     quantita:m.quantita,causale:m.causale,data:nowStr()});
   await loadAll();
@@ -216,20 +216,20 @@ async function saveArticolo(art, isNew){
   // scorta_min può essere 0, quindi gestiamo separatamente
   const sm = parseInt(art.scorta_min);
   row.scorta_min = (!isNaN(sm) && sm>=0) ? sm : null;
-  if(isNew) await db.insert('articoli',row);
-  else await db.update('articoli',row,`id=eq.${row.id}`);
+  if(isNew) await db.insert('magazzino_articoli',row);
+  else await db.update('magazzino_articoli',row,`id=eq.${row.id}`);
   await loadAll();
 }
 
 async function deleteArticolo(id){
-  await db.delete('movimenti',`articolo_id=eq.${id}`);
-  await db.delete('articoli',`id=eq.${id}`);
+  await db.delete('magazzino_movimenti',`articolo_id=eq.${id}`);
+  await db.delete('magazzino_articoli',`id=eq.${id}`);
   await loadAll();
 }
 
 async function saveUtente(u, isNew){
-  if(isNew) await db.insert('utenti',{...u,id:uid(),attivo:true,created_at:nowStr()});
-  else await db.update('utenti',u,`id=eq.${u.id}`);
+  if(isNew) await db.insert('magazzino_utenti',{...u,id:uid(),attivo:true,created_at:nowStr()});
+  else await db.update('magazzino_utenti',u,`id=eq.${u.id}`);
   await loadAll();
 }
 
@@ -920,7 +920,7 @@ function renderUtenti(){
 }
 
 async function toggleUtente(id,attivo){
-  await db.update('utenti',{attivo:!attivo},`id=eq.${id}`);
+  await db.update('magazzino_utenti',{attivo:!attivo},`id=eq.${id}`);
   await loadAll(); showToast('Utente aggiornato.');
 }
 
@@ -1435,8 +1435,8 @@ async function submitResetPass(userId){
   if(pass!==pass2){ errEl.innerHTML=errBox('Le password non coincidono.'); return; }
   const hash=await sha256(pass);
   try{
-    await db.update('utenti',{password_hash:hash},`id=eq.${userId}`);
-    await db.insert('log_accessi',{id:uid(),tipo:'reset_password',utente:state.utente.username,nome_completo:state.utente.nome_completo,target_user:userId,data:nowStr()});
+    await db.update('magazzino_utenti',{password_hash:hash},`id=eq.${userId}`);
+    await db.insert('magazzino_log_accessi',{id:uid(),tipo:'reset_password',utente:state.utente.username,nome_completo:state.utente.nome_completo,target_user:userId,data:nowStr()});
     await loadAll(); closeModal(); showToast('Password aggiornata.');
   } catch(e){ errEl.innerHTML=errBox(e.message); }
 }
