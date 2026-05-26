@@ -370,8 +370,8 @@ async function fetchVersion(){
     if(!data.length) return;
     const date = new Date(data[0].commit.author.date);
     _appVersion = date.toLocaleString('it-IT', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
-    const el = document.getElementById('app-version');
-    if(el) el.textContent = 'build ' + _appVersion;
+    // Se siamo nella schermata di login, ridisegna per mostrare la versione
+    if(state.phase === 'login') render();
   } catch {}
 }
 
@@ -383,7 +383,7 @@ function loginHTML(){ return authCard(`
     <div id="login-err"></div>
     <button id="login-btn" style="${btnStyle('primary',false,true)}" >Accedi</button>
   </div>
-  <div style="text-align:center;margin-top:20px;font-size:11px;color:var(--grigio-chiaro);">Medical Group · Gestione Magazzino<div id="app-version" style="margin-top:4px;font-size:10px;letter-spacing:.5px;">&nbsp;</div></div>`); }
+  <div style="text-align:center;margin-top:20px;font-size:11px;color:var(--grigio-chiaro);">Medical Group · Gestione Magazzino<div style="margin-top:4px;font-size:10px;letter-spacing:.5px;color:var(--grigio-chiaro);">${_appVersion?"build "+_appVersion:""}</div></div>`); }
 
 function bindLogin(){
   const go = async () => {
