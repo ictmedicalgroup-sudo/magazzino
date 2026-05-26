@@ -371,7 +371,7 @@ async function fetchVersion(){
     const date = new Date(data[0].commit.author.date);
     _appVersion = date.toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',year:'numeric'});
     const el = document.getElementById('app-version');
-    if(el) el.textContent = 'v ' + _appVersion;
+    if(el) el.textContent = 'build ' + _appVersion;
   } catch {}
 }
 
