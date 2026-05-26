@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>x Gestione Magazzino</title>
+<title>Gestione Magazzino</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Raleway:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -381,7 +381,7 @@ async function fetchVersion(){
 
 // ── Login ─────────────────────────────────────────────────────
 function loginHTML(){ return authCard(`
-  <div style="text-align:center;margin-bottom:28px;">${logoHTML()}<div style="margin-top:20px;font-size:13px;color:var(--grigio);">Accesso riservato al personale autorizzato</div></div>
+  <div style="text-align:center;margin-bottom:28px;">${logoHTML()}<div style="margin-top:20px;font-size:13px;color:var(--grigio);">Accesso riservato al personale autorizzato!</div></div>
   <div style="display:flex;flex-direction:column;gap:14px;">
     ${inp('login-user','Username','','text',true)}
     ${inp('login-pass','Password','','password',true)}
