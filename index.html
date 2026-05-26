@@ -381,7 +381,7 @@ async function fetchVersion(){
 
 // ── Login ─────────────────────────────────────────────────────
 function loginHTML(){ return authCard(`
-  <div style="text-align:center;margin-bottom:28px;">${logoHTML()}<div style="margin-top:20px;font-size:13px;color:var(--grigio);">Accesso riservato al personale autorizzato [test]</div></div>
+  <div style="text-align:center;margin-bottom:28px;">${logoHTML()}<div style="margin-top:20px;font-size:13px;color:var(--grigio);">Accesso riservato al personale autorizzato</div></div>
   <div style="display:flex;flex-direction:column;gap:14px;">
     ${inp('login-user','Username','','text',true)}
     ${inp('login-pass','Password','','password',true)}
@@ -391,7 +391,7 @@ function loginHTML(){ return authCard(`
   <div style="text-align:center;margin-top:20px;font-size:11px;color:var(--grigio-chiaro);">
     Medical Group · Gestione Magazzino
     <div id="app-version" style="margin-top:4px;font-size:10px;color:var(--grigio-chiaro);letter-spacing:.5px;">
-      ${_appVersion ? 'v ' + _appVersion : '&nbsp;'}
+      ${_appVersion ? 'build ' + _appVersion : '&nbsp;'}
     </div>
   </div>`); }
 
