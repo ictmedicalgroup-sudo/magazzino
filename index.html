@@ -148,6 +148,7 @@ async function loadAll(){
 }
 
 async function init(){
+  fetchVersion(); // non-blocking
   try {
     const utenti = await db.select('magazzino_utenti','limit=1');
     if(!utenti.length){ state.phase='setup'; render(); return; }
@@ -354,6 +355,27 @@ function bindSetup(){
   };
 }
 
+
+// ── Versione dinamica da GitHub API ───────────────────────────
+let _appVersion = '';
+
+async function fetchVersion(){
+  // Modifica GITHUB_REPO con il tuo repo, es: 'ictmedicalgroup-sudo/magazzino'
+  const GITHUB_REPO = 'ictmedicalgroup-sudo/magazzino';
+  try {
+    const r = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/commits?per_page=1`,
+      { headers: { 'Accept': 'application/vnd.github.v3+json' } });
+    if(!r.ok) return;
+    const data = await r.json();
+    if(!data.length) return;
+    const date = new Date(data[0].commit.author.date);
+    _appVersion = date.toLocaleDateString('it-IT', {day:'2-digit', month:'2-digit', year:'numeric'});
+    // Aggiorna il DOM se la schermata di login è già visibile
+    const el = document.getElementById('app-version');
+    if(el) el.textContent = 'v ' + _appVersion;
+  } catch {}
+}
+
 // ── Login ─────────────────────────────────────────────────────
 function loginHTML(){ return authCard(`
   <div style="text-align:center;margin-bottom:28px;">${logoHTML()}<div style="margin-top:20px;font-size:13px;color:var(--grigio);">Accesso riservato al personale autorizzato</div></div>
@@ -363,7 +385,12 @@ function loginHTML(){ return authCard(`
     <div id="login-err"></div>
     <button id="login-btn" style="${btnStyle('primary',false,true)}" >Accedi</button>
   </div>
-  <div style="text-align:center;margin-top:20px;font-size:11px;color:var(--grigio-chiaro);">Medical Group · Gestione Magazzino</div>`); }
+  <div style="text-align:center;margin-top:20px;font-size:11px;color:var(--grigio-chiaro);">
+    Medical Group · Gestione Magazzino
+    <div id="app-version" style="margin-top:4px;font-size:10px;color:var(--grigio-chiaro);letter-spacing:.5px;">
+      ${_appVersion ? 'v ' + _appVersion : ''}
+    </div>
+  </div>`); }
 
 function bindLogin(){
   const go = async () => {
