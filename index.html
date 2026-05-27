@@ -375,25 +375,40 @@ async function fetchVersion(){
   } catch {}
 }
 
-function loginHTML(){ return authCard(`
-  <div style="text-align:center;margin-bottom:28px;">${logoHTML()}<div style="margin-top:20px;font-size:13px;color:var(--grigio);">Accesso riservato al personale autorizzato</div></div>
-  <div style="display:flex;flex-direction:column;gap:14px;">
-    ${inp('login-user','Username','','text',true)}
-    ${inp('login-pass','Password','','password',true)}
-    <div id="login-err"></div>
-    <button id="login-btn" style="${btnStyle('primary',false,true)}" >Accedi</button>
-  </div>
-  <div style="text-align:center;margin-top:20px;font-size:11px;color:var(--grigio-chiaro);">Medical Group · Gestione Magazzino<div style="margin-top:4px;font-size:10px;letter-spacing:.5px;color:var(--grigio-chiaro);">${_appVersion?"build "+_appVersion:""}</div></div>`); }
+function loginHTML(){ return `
+  <div style="min-height:100vh;background:var(--grigio-sfondo);display:flex;align-items:center;justify-content:center;padding:16px;">
+    <div style="background:#fff;border-radius:16px;padding:40px 38px;max-width:420px;width:100%;box-shadow:0 12px 32px rgba(74,76,77,.14),0 4px 10px rgba(74,76,77,.07);border:1px solid var(--bordo);">
+      <div id="login-logo" style="margin-bottom:0"></div>
+      <div style="margin-top:14px;font-size:13px;color:var(--grigio);text-align:center">Accesso riservato al personale autorizzato</div>
+      <div id="login-err" style="display:none;background:#FDECEA;color:#C0392B;border-radius:6px;padding:10px 14px;font-size:13px;margin-top:14px;"></div>
+      <div style="margin-top:12px;margin-bottom:16px">
+        <label style="display:block;font-size:12px;font-weight:600;color:#4A4C4D;letter-spacing:.5px;margin-bottom:6px">E-Mail</label>
+        <input id="login-user" type="email" placeholder="nome@medicalgroup.it" autocomplete="username"
+          style="width:100%;padding:11px 14px;border:1px solid #E2E6DF;border-radius:6px;background:#EEF5E3;font-family:'Raleway',sans-serif;font-size:14px;color:#2A2C2D;outline:none;transition:border-color .2s"/>
+      </div>
+      <div style="margin-bottom:20px">
+        <label style="display:block;font-size:12px;font-weight:600;color:#4A4C4D;letter-spacing:.5px;margin-bottom:6px">Password</label>
+        <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password"
+          style="width:100%;padding:11px 14px;border:1px solid #E2E6DF;border-radius:6px;background:#EEF5E3;font-family:'Raleway',sans-serif;font-size:14px;color:#2A2C2D;outline:none;transition:border-color .2s"/>
+      </div>
+      <button id="login-btn" style="width:100%;padding:12px;background:#9DBF60;color:#fff;border:none;border-radius:6px;font-family:'Raleway',sans-serif;font-size:14px;font-weight:700;cursor:pointer;transition:opacity .2s">Accedi</button>
+      <div style="margin-top:14px;font-size:10px;color:#aaaaaa;text-align:center;letter-spacing:.5px">${_appVersion?"build "+_appVersion:""}</div>
+    </div>
+  </div>`; }
 
 function bindLogin(){
+  const ll=document.getElementById('login-logo');
+  if(ll) ll.innerHTML=logoHTML(false);
   const go = async () => {
     const err=document.getElementById('login-err');
-    err.innerHTML='';
-    setLoading('login-btn',true);
+    err.style.display='none'; err.textContent='';
+    const btn=document.getElementById('login-btn');
+    btn.disabled=true; btn.textContent='Accesso…';
     try{ await doLogin(val('login-user'),val('login-pass')); }
-    catch(e){ err.innerHTML=errBox(e.message); setLoading('login-btn',false); }
+    catch(e){ err.textContent=e.message; err.style.display='block'; btn.disabled=false; btn.textContent='Accedi'; }
   };
   document.getElementById('login-btn').onclick=go;
+  document.getElementById('login-user').addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('login-pass').focus(); });
   document.getElementById('login-pass').addEventListener('keydown',e=>{ if(e.key==='Enter') go(); });
 }
 
