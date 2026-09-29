@@ -285,7 +285,12 @@ function findArtByBarcode(code){
 // ════════════════════════════════════════════════════════════════
 // MODAL MANAGER
 // ════════════════════════════════════════════════════════════════
-function openModal(m){ state.modal=m; render(); }
+function openModal(m){
+  state.modal=m; render();
+  if((m.type==='carico'||m.type==='scarico')&&!m.preselectId&&!state.isMobile){
+    setTimeout(()=>{ const q=document.getElementById('mov-art-q'); if(q){ q.focus(); } },30);
+  }
+}
 function closeModal(){ state.modal=null; render(); }
 
 // ════════════════════════════════════════════════════════════════
@@ -1246,16 +1251,21 @@ function movimentoModal(tipo,preselectId,giacenze){
 
   return `${modalHeader(tipo==='carico'?'Registra carico':'Registra scarico',ac)}
     <div style="display:flex;flex-direction:column;gap:14px;" id="mov-form">
-      <div style="position:relative;">
-        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
-          Cerca per barcode o codice
-          <input id="mov-bc" placeholder="Digita codice o barcode…" style="${inpStyle()}" oninput="movBarcodeInput(this.value);">
-        </label>
+      <div style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
+        <span>Articolo <span style="color:var(--verde);">*</span></span>
+        <div style="position:relative;">
+          <input type="hidden" id="mov-art" value="${selArt?selArt.id:''}">
+          <input id="mov-art-q" autocomplete="off" spellcheck="false"
+            value="${selArt?escHtml(selArt.codice+' — '+selArt.nome):''}"
+            placeholder="🔍 Codice, barcode o descrizione…"
+            oninput="comboInput(this.value)" onkeydown="comboKey(event)" onfocus="comboOpen()" onblur="setTimeout(comboClose,150)"
+            style="${inpStyle()};padding-right:34px;">
+          <button type="button" id="mov-art-x" onmousedown="event.preventDefault();comboClear();" title="Svuota"
+            style="position:absolute;right:6px;top:50%;transform:translateY(-50%);border:none;background:transparent;color:var(--grigio-chiaro);font-size:18px;cursor:pointer;display:${selArt?'block':'none'};">×</button>
+          <div id="mov-art-list" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--bordo);border-radius:8px;box-shadow:0 8px 24px #0000001f;max-height:260px;overflow-y:auto;z-index:1000;"></div>
+        </div>
+        <span style="font-size:10px;color:var(--grigio-chiaro);font-weight:400;">Scrivi per filtrare, usa ↑ ↓ e Invio, oppure spara il barcode col lettore.</span>
       </div>
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Oppure seleziona dalla lista <span style="color:var(--verde);">*</span></span>
-        <input id="mov-art-search" placeholder="🔍 Filtra per codice o nome…" oninput="filterMovArt(this.value)" style="${inpStyle()};margin-bottom:4px;" autocomplete="off">
-        <select id="mov-art" onchange="movArtChange()" style="${inpStyle()}"><option value="">— seleziona —</option>${artOpts}</select>
-      </label>
       <div id="mov-info">${infoBar}</div>
       <div id="mov-sc-toggle">${scToggleInit}</div>
       <div id="mov-qty-wrap">
@@ -1350,24 +1360,114 @@ function checkQtyScarico(){
   }
 }
 
-function filterMovArt(q){
-  const sel=document.getElementById('mov-art');
-  if(!sel) return;
-  const v=q.trim().toLowerCase();
-  Array.from(sel.options).forEach(opt=>{
-    if(!opt.value){ opt.hidden=false; return; }
-    const art=state.articoli.find(a=>a.id===opt.value);
-    if(!art){ opt.hidden=false; return; }
-    const match=!v||art.codice?.toLowerCase().includes(v)||art.nome?.toLowerCase().includes(v)||art.barcode?.toLowerCase().includes(v);
-    opt.hidden=!match;
-  });
-  const visible=Array.from(sel.options).filter(o=>o.value&&!o.hidden);
-  if(visible.length===1){ sel.value=visible[0].value; movArtChange(); }
+// ── Combobox articolo (ricerca unica: codice, barcode, descrizione) ──
+let _comboIdx=-1, _comboRes=[];
+function comboSearch(q){
+  const words=q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if(!words.length) return state.articoli.slice().sort((a,b)=>a.codice.localeCompare(b.codice));
+  const ql=q.trim().toLowerCase();
+  return state.articoli
+    .filter(a=>{ const hay=(a.codice+' '+(a.barcode||'')+' '+a.nome).toLowerCase(); return words.every(w=>hay.includes(w)); })
+    .sort((a,b)=>{
+      const sc=x=>(x.codice.toLowerCase()===ql||(x.barcode||'').toLowerCase()===ql)?0:x.codice.toLowerCase().startsWith(ql)?1:x.nome.toLowerCase().startsWith(ql)?2:3;
+      return sc(a)-sc(b)||a.codice.localeCompare(b.codice);
+    });
 }
-
-function movBarcodeInput(v){
-  const art=findArtByBarcode(v);
-  if(art){ document.getElementById('mov-art').value=art.id; movArtChange(); document.getElementById('mov-bc').value=''; }
+function comboHighlight(text,words){
+  const t=String(text??''), tl=t.toLowerCase(), mark=new Array(t.length).fill(false);
+  words.forEach(w=>{ if(!w) return; let i=tl.indexOf(w); while(i!==-1){ for(let k=i;k<i+w.length;k++) mark[k]=true; i=tl.indexOf(w,i+w.length); } });
+  let out='', on=false;
+  for(let i=0;i<t.length;i++){
+    if(mark[i]&&!on){ out+='<b style="color:var(--verde-scuro);">'; on=true; }
+    if(!mark[i]&&on){ out+='</b>'; on=false; }
+    out+=escHtml(t[i]);
+  }
+  return out+(on?'</b>':'');
+}
+function comboRender(q){
+  const list=document.getElementById('mov-art-list'); if(!list) return;
+  _comboRes=comboSearch(q);
+  const words=q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const g=calcGiacenze();
+  if(!_comboRes.length){
+    list.innerHTML='<div style="padding:12px 14px;font-size:12px;color:var(--grigio-chiaro);font-weight:400;">Nessun articolo trovato.</div>';
+  } else {
+    const shown=_comboRes.slice(0,80);
+    list.innerHTML=shown.map((a,i)=>`<div data-i="${i}" onmousedown="event.preventDefault();comboPick(${i});" onmousemove="comboSetIdx(${i})"
+      style="padding:9px 14px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid var(--bordo);background:${i===_comboIdx?'var(--verde-pale)':'#fff'};">
+      <div style="min-width:0;">
+        <div style="font-size:13px;font-weight:600;color:var(--testo);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${comboHighlight(a.nome,words)}${a.frigo?' <span style="font-size:11px;">❄</span>':''}</div>
+        <div style="font-size:11px;color:var(--grigio);font-weight:400;">${comboHighlight(a.codice,words)}${a.barcode?' · <span style="font-family:monospace;">'+comboHighlight(a.barcode,words)+'</span>':''}</div>
+      </div>
+      <div style="font-size:11px;color:var(--grigio);white-space:nowrap;font-weight:400;">${fmt(g[a.id]?.pezzi??0)} ${escHtml(a.um)}</div>
+    </div>`).join('')+(_comboRes.length>80?`<div style="padding:8px 14px;font-size:11px;color:var(--grigio-chiaro);font-weight:400;">…altri ${_comboRes.length-80}, affina la ricerca</div>`:'');
+  }
+  list.style.display='block';
+}
+function comboSetIdx(i){
+  if(i===_comboIdx) return;
+  const list=document.getElementById('mov-art-list'); if(!list) return;
+  const prev=list.querySelector(`[data-i="${_comboIdx}"]`); if(prev) prev.style.background='#fff';
+  _comboIdx=i;
+  const cur=list.querySelector(`[data-i="${i}"]`); if(cur){ cur.style.background='var(--verde-pale)'; cur.scrollIntoView({block:'nearest'}); }
+}
+function comboOpen(){
+  const q=document.getElementById('mov-art-q'); if(!q) return;
+  // se c'è già un articolo selezionato, apri la lista completa selezionando il testo
+  if(document.getElementById('mov-art').value){ q.select(); _comboIdx=-1; comboRender(''); }
+  else { _comboIdx=-1; comboRender(q.value); }
+}
+function comboClose(){ const l=document.getElementById('mov-art-list'); if(l) l.style.display='none'; }
+function comboInput(v){
+  const hid=document.getElementById('mov-art');
+  if(hid.value){ hid.value=''; movArtReset(); }
+  document.getElementById('mov-art-x').style.display=v?'block':'none';
+  // match esatto su barcode (lettore senza Invio) → selezione immediata
+  const vl=v.trim().toLowerCase();
+  const exact=vl.length>=6&&state.articoli.find(a=>a.barcode&&a.barcode.toLowerCase()===vl);
+  if(exact){ comboSelect(exact); return; }
+  _comboIdx=-1; comboRender(v);
+  if(_comboRes.length===1) comboSetIdx(0);
+}
+function comboKey(e){
+  const list=document.getElementById('mov-art-list');
+  const open=list&&list.style.display!=='none';
+  if(e.key==='ArrowDown'){ e.preventDefault(); if(!open) comboRender(e.target.value); comboSetIdx(Math.min(_comboIdx+1,Math.min(_comboRes.length,80)-1)); }
+  else if(e.key==='ArrowUp'){ e.preventDefault(); comboSetIdx(Math.max(_comboIdx-1,0)); }
+  else if(e.key==='Enter'){
+    e.preventDefault();
+    const vl=e.target.value.trim().toLowerCase();
+    const exact=state.articoli.find(a=>a.codice.toLowerCase()===vl||(a.barcode&&a.barcode.toLowerCase()===vl));
+    if(exact) comboSelect(exact);
+    else if(_comboIdx>=0&&_comboRes[_comboIdx]) comboSelect(_comboRes[_comboIdx]);
+    else if(_comboRes.length===1) comboSelect(_comboRes[0]);
+    else if(_comboRes.length>1){ if(!open) comboRender(e.target.value); comboSetIdx(0); }
+  }
+  else if(e.key==='Escape'){ comboClose(); }
+}
+function comboPick(i){ if(_comboRes[i]) comboSelect(_comboRes[i]); }
+function comboSelect(a){
+  document.getElementById('mov-art').value=a.id;
+  const q=document.getElementById('mov-art-q'); q.value=a.codice+' — '+a.nome;
+  document.getElementById('mov-art-x').style.display='block';
+  comboClose(); movArtChange();
+  const qty=document.getElementById('mov-qty'); if(qty) qty.focus();
+}
+function comboClear(){
+  document.getElementById('mov-art').value='';
+  const q=document.getElementById('mov-art-q'); q.value='';
+  document.getElementById('mov-art-x').style.display='none';
+  movArtReset(); q.focus();
+}
+// Riporta il form allo stato "nessun articolo selezionato"
+function movArtReset(){
+  const infoEl=document.getElementById('mov-info'); if(infoEl) infoEl.innerHTML='';
+  const scEl=document.getElementById('mov-sc-toggle'); if(scEl) scEl.innerHTML='';
+  const scad=document.getElementById('mov-scad');
+  if(scad&&scad.tagName==='SELECT'){
+    document.getElementById('mov-scad-wrap').innerHTML='<select id="mov-scad" disabled style="'+inpStyle()+';opacity:.5;"><option>— seleziona prima l\'articolo —</option></select>';
+    const li=document.getElementById('mov-lotto-info'); if(li) li.innerHTML='';
+  }
 }
 
 function movArtChange(){
