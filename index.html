@@ -222,6 +222,7 @@ async function saveArticolo(art, isNew){
     um:            art.um,
     tipo_id:       art.tipo_id||null,
     frigo:         art.frigo===true||art.frigo==='true'||false,
+    note:          (art.note&&String(art.note).trim())||null,
     pezzi_scatola: toInt(art.pezzi_scatola),
     scorta_min:    null,
     created_at:    art.created_at||nowStr()
@@ -563,6 +564,7 @@ function mobileGiacenzaCard(g){
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
       <div>${g.art.scorta_min!=null?(sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')):''}</div>
       <div style="display:flex;gap:8px;">
+        ${noteBtn(g.art)}
         <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
         <button onclick="openModal({type:'scarico',preselectId:'${g.art.id}'})" style="${btnStyle('ghost',true)}">↓</button>
       </div>
@@ -583,6 +585,7 @@ function desktopGiacenzaRow(g){
     <td style="padding:11px 14px;color:var(--grigio);">${g.art.scorta_min!=null?fmt(g.art.scorta_min):'—'}</td>
     <td style="padding:11px 14px;">${g.art.scorta_min==null?'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>':sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')}</td>
     <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+      ${noteBtn(g.art)}
       <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
       <button onclick="openModal({type:'scarico',preselectId:'${g.art.id}'})" style="${btnStyle('ghost',true)}">↓</button>
     </div></td>
@@ -789,6 +792,7 @@ function renderArticoli(giacenze){
       <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
       <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)}</span></td>
       <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+        ${noteBtn(a)}
         <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
         <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
       </div></td>
@@ -845,6 +849,7 @@ function updateArticoliTable(){
       <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
       <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)}</span></td>
       <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+        ${noteBtn(a)}
         <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
         <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
       </div></td>
@@ -1155,9 +1160,10 @@ function renderModal(giacenze){
   else if(m.type==='nuovo_tipo') html=tipoModal(null);
   else if(m.type==='edit_tipo') html=tipoModal(m.tipo);
   else if(m.type==='nuovo_art'||m.type==='edit_art') html=articoloModal(m.art);
+  else if(m.type==='note_art') html=noteArtModal(m.id);
   else if(m.type==='nuovo_utente') html=nuovoUtenteModal();
   else if(m.type==='reset_pass') html=resetPassModal(m.userId,m.userName);
-  return `<div onclick="if(event.target===this)closeModal();" style="position:fixed;inset:0;background:#2c2e2f88;backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:998;padding:16px;">
+  return `<div style="position:fixed;inset:0;background:#2c2e2f88;backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:998;padding:16px;">
     <div style="background:#fff;border-radius:12px;width:100%;max-width:480px;padding:24px;box-shadow:0 24px 80px #0000002a;border:1px solid var(--bordo);max-height:92vh;overflow-y:auto;">
       ${html}
     </div>
@@ -1261,7 +1267,7 @@ function movimentoModal(tipo,preselectId,giacenze){
         <select id="mov-causale" style="${inpStyle()}">${causOpts}</select>
       </label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
-        ${tipo==='scarico'?'Lotto / Data di scadenza':'Data di scadenza'} <span style="color:var(--verde);">*</span>
+        <span>${tipo==='scarico'?'Lotto / Data di scadenza':'Data di scadenza'} <span style="color:var(--verde);">*</span></span>
         <div id="mov-scad-wrap">${scadSelect}</div>
       </label>
       <div id="mov-lotto-info"></div>
@@ -1452,6 +1458,37 @@ function nextCodice(){
   return 'ART' + String(max + 1).padStart(3, '0');
 }
 
+function escHtml(s){
+  return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Pulsante note: sfondo bianco se vuote, verde se presenti
+function noteBtn(a){
+  const has=!!(a.note&&String(a.note).trim());
+  const st=has
+    ? 'background:var(--verde);color:#fff;border:1px solid var(--verde);'
+    : 'background:#fff;color:var(--grigio);border:1px solid var(--bordo);';
+  return `<button onclick="openModal({type:'note_art',id:'${a.id}'})" title="${has?'Visualizza note':'Nessuna nota'}" style="${st}border-radius:6px;padding:6px 10px;cursor:pointer;font-family:inherit;font-size:13px;line-height:1;">✉</button>`;
+}
+
+function noteArtModal(id){
+  const a=state.articoli.find(x=>x.id===id);
+  if(!a) return `${modalHeader('Note articolo')}<div>Articolo non trovato.</div>`;
+  const has=!!(a.note&&String(a.note).trim());
+  const lbl=t=>`<div style="font-size:10px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;">${t}</div>`;
+  return `${modalHeader('Note articolo','var(--verde)')}
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div style="display:flex;flex-direction:column;gap:4px;">${lbl('Codice')}<div>${pill(escHtml(a.codice),'var(--grigio)')}</div></div>
+      <div style="display:flex;flex-direction:column;gap:4px;">${lbl('Articolo')}<div style="font-weight:600;font-size:14px;">${escHtml(a.nome)}</div></div>
+      <div style="display:flex;flex-direction:column;gap:4px;">${lbl('Note')}
+        <div style="background:var(--grigio-sfondo);border:1px solid var(--bordo);border-radius:6px;padding:12px 14px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;min-height:60px;color:${has?'var(--testo)':'var(--grigio-chiaro)'};">${has?escHtml(a.note):'Nessuna nota per questo articolo.'}</div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Chiudi</button>
+      </div>
+    </div>`;
+}
+
 function artBadges(art){
   let b='';
   if(art.frigo) b+=`<span style="background:var(--verde);color:#fff;border-radius:4px;font-size:9px;font-weight:700;padding:2px 6px;letter-spacing:.8px;text-transform:uppercase;margin-left:6px;vertical-align:middle;">❄ Frigo</span>`;
@@ -1465,7 +1502,7 @@ function tipoModal(tipo){
   return `${modalHeader(isEdit?'Rinomina tipo':'Nuovo tipo prodotto')}
     <div style="display:flex;flex-direction:column;gap:14px;">
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
-        Nome tipo <span style="color:var(--verde);">*</span>
+        <span>Nome tipo <span style="color:var(--verde);">*</span></span>
         <input id="tipo-nome" value="${tipo?.nome||''}" placeholder="es. Farmaco, Dispositivo medico…"
           style="${inpStyle()}" autofocus>
       </label>
@@ -1522,6 +1559,9 @@ function articoloModal(art){
         <input type="checkbox" id="art-frigo" ${art?.frigo?'checked':''} style="width:15px;height:15px;cursor:pointer;accent-color:var(--verde);">
         ❄ Conservazione in frigorifero
       </label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Note
+        <textarea id="art-note" rows="4" placeholder="Note libere sull'articolo…" style="${inpStyle()};resize:vertical;min-height:80px;line-height:1.4;">${escHtml((state.articoli.find(x=>x.id===art?.id)||art)?.note||'')}</textarea>
+      </label>
       <div style="border-top:1px solid var(--bordo);padding-top:14px;display:flex;flex-direction:column;gap:12px;">
         <div style="font-size:10px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;">Scatola &amp; Scorta</div>
         <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Pezzi per scatola (opzionale)<input type="number" id="art-pzsc" min="1" value="${art?.pezzi_scatola||''}" placeholder="es. 100" style="${inpStyle()}"></label>
@@ -1554,6 +1594,7 @@ async function submitArticolo(existingId){
     nome, um:document.getElementById('art-um').value,
     tipo_id:document.getElementById('art-tipo').value||null,
     frigo:document.getElementById('art-frigo').checked,
+    note:document.getElementById('art-note').value.trim()||null,
     pezzi_scatola: pzscVal!=='' ? parseInt(pzscVal) : null,
     scorta_min:    scminVal!=='' ? parseInt(scminVal) : null,
     created_at:nowStr()
