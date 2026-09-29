@@ -1246,17 +1246,18 @@ function movimentoModal(tipo,preselectId,giacenze){
           <input id="mov-bc" placeholder="Digita codice o barcode…" style="${inpStyle()}" oninput="movBarcodeInput(this.value);">
         </label>
       </div>
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Oppure seleziona dalla lista <span style="color:var(--verde);">*</span>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Oppure seleziona dalla lista <span style="color:var(--verde);">*</span></span>
+        <input id="mov-art-search" placeholder="🔍 Filtra per codice o nome…" oninput="filterMovArt(this.value)" style="${inpStyle()};margin-bottom:4px;" autocomplete="off">
         <select id="mov-art" onchange="movArtChange()" style="${inpStyle()}"><option value="">— seleziona —</option>${artOpts}</select>
       </label>
       <div id="mov-info">${infoBar}</div>
       <div id="mov-sc-toggle">${scToggleInit}</div>
       <div id="mov-qty-wrap">
-        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Quantità <span style="color:var(--verde);">*</span>
+        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Quantità <span style="color:var(--verde);">*</span></span>
           <input type="number" id="mov-qty" min="1" oninput="${tipo==='scarico'?'checkQtyScarico();':''}" style="${inpStyle()}">
         </label>
       </div>
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Causale <span style="color:var(--verde);">*</span>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Causale <span style="color:var(--verde);">*</span></span>
         <select id="mov-causale" style="${inpStyle()}">${causOpts}</select>
       </label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
@@ -1343,6 +1344,21 @@ function checkQtyScarico(){
   }
 }
 
+function filterMovArt(q){
+  const sel=document.getElementById('mov-art');
+  if(!sel) return;
+  const v=q.trim().toLowerCase();
+  Array.from(sel.options).forEach(opt=>{
+    if(!opt.value){ opt.hidden=false; return; }
+    const art=state.articoli.find(a=>a.id===opt.value);
+    if(!art){ opt.hidden=false; return; }
+    const match=!v||art.codice?.toLowerCase().includes(v)||art.nome?.toLowerCase().includes(v)||art.barcode?.toLowerCase().includes(v);
+    opt.hidden=!match;
+  });
+  const visible=Array.from(sel.options).filter(o=>o.value&&!o.hidden);
+  if(visible.length===1){ sel.value=visible[0].value; movArtChange(); }
+}
+
 function movBarcodeInput(v){
   const art=findArtByBarcode(v);
   if(art){ document.getElementById('mov-art').value=art.id; movArtChange(); document.getElementById('mov-bc').value=''; }
@@ -1384,11 +1400,11 @@ function setModalita(m,artId){
   const wrap=document.getElementById('mov-qty-wrap');
   if(!wrap||!art) return;
   if(m==='scatole'){
-    wrap.innerHTML=`<div style="display:flex;flex-direction:column;gap:8px;"><label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Numero di scatole <span style="color:var(--verde);">*</span><input type="number" id="mov-qty" min="1" oninput="document.getElementById('mov-qty-info')&&(document.getElementById('mov-qty-info').textContent='= '+(parseInt(this.value)||0)*${art.pezzi_scatola}+' ${art.um} totali')" style="${inpStyle()}"></label><div id="mov-qty-info" style="font-size:11px;color:var(--verde);font-weight:600;"></div></div>`;
+    wrap.innerHTML=`<div style="display:flex;flex-direction:column;gap:8px;"><label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Numero di scatole <span style="color:var(--verde);">*</span></span><input type="number" id="mov-qty" min="1" oninput="document.getElementById('mov-qty-info')&&(document.getElementById('mov-qty-info').textContent='= '+(parseInt(this.value)||0)*${art.pezzi_scatola}+' ${art.um} totali')" style="${inpStyle()}"></label><div id="mov-qty-info" style="font-size:11px;color:var(--verde);font-weight:600;"></div></div>`;
     document.getElementById('sc-pz').style.cssText+='background:#fff;color:var(--grigio);border-color:var(--bordo);';
     document.getElementById('sc-sc').style.cssText+='background:var(--verde)11;color:var(--verde);border-color:var(--verde);';
   } else {
-    wrap.innerHTML=`<label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Quantità (${art.um}) <span style="color:var(--verde);">*</span><input type="number" id="mov-qty" min="1" style="${inpStyle()}"></label>`;
+    wrap.innerHTML=`<label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Quantità (${art.um}) <span style="color:var(--verde);">*</span></span><input type="number" id="mov-qty" min="1" style="${inpStyle()}"></label>`;
     document.getElementById('sc-pz').style.cssText+='background:var(--verde)11;color:var(--verde);border-color:var(--verde);';
     document.getElementById('sc-sc').style.cssText+='background:#fff;color:var(--grigio);border-color:var(--bordo);';
   }
@@ -1490,7 +1506,7 @@ function articoloModal(art){
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Barcode / EAN (opzionale)
         <input id="art-barcode" value="${art?.barcode||''}" placeholder="Digita il barcode del prodotto" style="${inpStyle()}">
       </label>
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Descrizione <span style="color:var(--verde);">*</span><input id="art-nome" value="${art?.nome||''}" placeholder="es. Guanti nitrile M" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Descrizione <span style="color:var(--verde);">*</span></span><input id="art-nome" value="${art?.nome||''}" placeholder="es. Guanti nitrile M" style="${inpStyle()}"></label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Unità di misura
         <select id="art-um" style="${inpStyle()}">
           ${['pz','conf','kg','g','l','ml','m'].map(u=>`<option value="${u}" ${(art?.um||'pz')===u?'selected':''}>${u}</option>`).join('')}
@@ -1550,9 +1566,9 @@ async function submitArticolo(existingId){
 function nuovoUtenteModal(){
   return `${modalHeader('Nuovo utente')}
     <div style="display:flex;flex-direction:column;gap:14px;">
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Nome completo <span style="color:var(--verde);">*</span><input id="nu-nome" style="${inpStyle()}"></label>
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Username <span style="color:var(--verde);">*</span><input id="nu-user" placeholder="es. mrossi" style="${inpStyle()}"></label>
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Password temporanea <span style="color:var(--verde);">*</span><input type="password" id="nu-pass" placeholder="minimo 6 caratteri" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Nome completo <span style="color:var(--verde);">*</span></span><input id="nu-nome" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Username <span style="color:var(--verde);">*</span></span><input id="nu-user" placeholder="es. mrossi" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Password temporanea <span style="color:var(--verde);">*</span></span><input type="password" id="nu-pass" placeholder="minimo 6 caratteri" style="${inpStyle()}"></label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Ruolo
         <select id="nu-ruolo" style="${inpStyle()}"><option value="operatore">Operatore (solo carico/scarico)</option><option value="admin">Amministratore (accesso completo)</option></select>
       </label>
@@ -1582,8 +1598,8 @@ async function submitNuovoUtente(){
 function resetPassModal(userId,userName){
   return `${modalHeader(`Reset password — ${userName}`)}
     <div style="display:flex;flex-direction:column;gap:14px;">
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Nuova password <span style="color:var(--verde);">*</span><input type="password" id="rp-pass" placeholder="minimo 6 caratteri" style="${inpStyle()}"></label>
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Conferma password <span style="color:var(--verde);">*</span><input type="password" id="rp-pass2" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Nuova password <span style="color:var(--verde);">*</span></span><input type="password" id="rp-pass" placeholder="minimo 6 caratteri" style="${inpStyle()}"></label>
+      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Conferma password <span style="color:var(--verde);">*</span></span><input type="password" id="rp-pass2" style="${inpStyle()}"></label>
       <div id="rp-err"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
         <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
