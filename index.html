@@ -1413,9 +1413,11 @@ function comboSetIdx(i){
 }
 function comboOpen(){
   const q=document.getElementById('mov-art-q'); if(!q) return;
-  // se c'è già un articolo selezionato, apri la lista completa selezionando il testo
-  if(document.getElementById('mov-art').value){ q.select(); _comboIdx=-1; comboRender(''); }
-  else { _comboIdx=-1; comboRender(q.value); }
+  // Articolo già selezionato: seleziona il testo per sostituirlo, senza aprire la tendina
+  if(document.getElementById('mov-art').value){ q.select(); return; }
+  // La tendina compare solo se c'è già del testo digitato
+  _comboIdx=-1;
+  if(q.value.trim()) comboRender(q.value); else comboClose();
 }
 function comboClose(){ const l=document.getElementById('mov-art-list'); if(l) l.style.display='none'; }
 function comboInput(v){
@@ -1426,7 +1428,9 @@ function comboInput(v){
   const vl=v.trim().toLowerCase();
   const exact=vl.length>=6&&state.articoli.find(a=>a.barcode&&a.barcode.toLowerCase()===vl);
   if(exact){ comboSelect(exact); return; }
-  _comboIdx=-1; comboRender(v);
+  _comboIdx=-1;
+  if(!v.trim()){ comboClose(); return; }
+  comboRender(v);
   if(_comboRes.length===1) comboSetIdx(0);
 }
 function comboKey(e){
