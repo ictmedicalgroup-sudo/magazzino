@@ -106,6 +106,7 @@ let state = {
   articoli: [],
   movimenti: [],
   tipi: [],
+  codici: [],
   logEntries: [],
   utenti: [],
   tab: 'Giacenze',
@@ -139,6 +140,9 @@ async function loadAll(){
     db.select('magazzino_log_accessi','order=data.desc&limit=500'),
     db.select('magazzino_articoli_tipo','order=nome.asc'),
   ]);
+  // Codici singoli: se la tabella non esiste ancora l'app continua a funzionare
+  const codici = await db.select('magazzino_articoli_codici','order=codice.asc').catch(()=>[]);
+  state.codici     = codici;
   state.articoli   = articoli;
   state.movimenti  = movimenti;
   state.utenti     = utenti;
@@ -235,6 +239,7 @@ async function saveArticolo(art, isNew){
 }
 
 async function deleteArticolo(id){
+  await db.delete('magazzino_articoli_codici',`articolo_id=eq.${id}`).catch(()=>{});
   await db.delete('magazzino_movimenti',`articolo_id=eq.${id}`);
   await db.delete('magazzino_articoli',`id=eq.${id}`);
   await loadAll();
@@ -250,9 +255,13 @@ async function saveUtente(u, isNew){
 // TOAST
 // ════════════════════════════════════════════════════════════════
 function showToast(msg,type='ok'){
-  state.toast={msg,type};
-  render();
-  setTimeout(()=>{ state.toast=null; render(); },3000);
+  let el=document.getElementById('toast');
+  if(!el){ el=document.createElement('div'); el.id='toast'; document.body.appendChild(el); }
+  const mob=window.innerWidth<700;
+  el.style.cssText=`position:fixed;bottom:${mob?80:24}px;right:${mob?12:24}px;background:${type==='ok'?'var(--verde)':'var(--rosso)'};color:#fff;font-weight:700;font-size:12px;padding:12px 20px;border-radius:8px;box-shadow:0 8px 32px #0000002a;z-index:9999;animation:slideUp .25s ease;max-width:calc(100vw - 24px);`;
+  el.textContent=msg;
+  clearTimeout(window._toastT);
+  window._toastT=setTimeout(()=>{ el.remove(); },3000);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -286,9 +295,12 @@ function findArtByBarcode(code){
 // MODAL MANAGER
 // ════════════════════════════════════════════════════════════════
 function openModal(m){
+  if(m.type==='carico'||m.type==='scarico'){ window._movModalita='pezzi'; window._movCodici=[]; window._movCodSel=new Set(); }
+  if(m.type==='codici_art'){ window._codStato='carico'; window._codQ=''; }
   state.modal=m; render();
+  if((m.type==='carico'||m.type==='scarico')&&m.preselectId) movArtChange();
   if((m.type==='carico'||m.type==='scarico')&&!m.preselectId&&!state.isMobile){
-    setTimeout(()=>{ const q=document.getElementById('mov-art-q'); if(q){ q.focus(); } },30);
+    const q=document.getElementById('mov-art-q'); if(q) q.focus();
   }
 }
 function closeModal(){ state.modal=null; render(); }
@@ -303,6 +315,7 @@ function render(){
   if(state.phase==='login'){   app.innerHTML=loginHTML();   bindLogin(); return; }
   app.innerHTML=mainHTML();
   bindMain();
+  if(state.modal?.type==='codici_art') updateCodModal(state.modal.id);
 }
 
 // ── Loading ───────────────────────────────────────────────────
@@ -468,7 +481,7 @@ function mainHTML(){
     </div>` : '';
 
   const modalHTML = state.modal ? renderModal(giacenze) : '';
-  const toastHTML = state.toast ? `<div style="position:fixed;bottom:${mob?80:24}px;right:${mob?12:24}px;background:${state.toast.type==='ok'?'var(--verde)':'var(--rosso)'};color:#fff;font-weight:700;font-size:12px;padding:12px 20px;border-radius:8px;box-shadow:0 8px 32px #0000002a;z-index:9999;animation:slideUp .25s ease;">${state.toast.msg}</div>` : '';
+  const toastHTML = ''; // il toast è gestito da showToast() fuori dal render
 
   const fabHTML = mob ? `
     <div style="position:fixed;bottom:20px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:200;">
@@ -569,7 +582,7 @@ function mobileGiacenzaCard(g){
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
       <div>${g.art.scorta_min!=null?(sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')):''}</div>
       <div style="display:flex;gap:8px;">
-        ${noteBtn(g.art)}
+        ${codiciBtn(g.art)}${noteBtn(g.art)}
         <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
         <button onclick="openModal({type:'scarico',preselectId:'${g.art.id}'})" style="${btnStyle('ghost',true)}">↓</button>
       </div>
@@ -589,8 +602,8 @@ function desktopGiacenzaRow(g){
     <td style="padding:11px 14px;color:var(--grigio);">${g.art.pezzi_scatola||'—'}</td>
     <td style="padding:11px 14px;color:var(--grigio);">${g.art.scorta_min!=null?fmt(g.art.scorta_min):'—'}</td>
     <td style="padding:11px 14px;">${g.art.scorta_min==null?'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>':sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')}</td>
-    <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
-      ${noteBtn(g.art)}
+    <td style="padding:11px 14px;"><div style="display:flex;gap:6px;justify-content:flex-end;">
+      ${codiciBtn(g.art)}${noteBtn(g.art)}
       <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
       <button onclick="openModal({type:'scarico',preselectId:'${g.art.id}'})" style="${btnStyle('ghost',true)}">↓</button>
     </div></td>
@@ -796,8 +809,8 @@ function renderArticoli(giacenze){
       <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
       <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
       <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)}</span></td>
-      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
-        ${noteBtn(a)}
+      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;justify-content:flex-end;">
+        ${codiciBtn(a)}${noteBtn(a)}
         <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
         <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
       </div></td>
@@ -853,8 +866,8 @@ function updateArticoliTable(){
       <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
       <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
       <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)}</span></td>
-      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
-        ${noteBtn(a)}
+      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;justify-content:flex-end;">
+        ${codiciBtn(a)}${noteBtn(a)}
         <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
         <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
       </div></td>
@@ -959,10 +972,11 @@ function renderTipi(){
     return `
       <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
         <td style="padding:11px 14px;font-weight:600;">${t.nome}</td>
+        <td style="padding:11px 14px;">${t.codice_singolo?pill('✓ Attivo','var(--verde)'):'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>'}</td>
         <td style="padding:11px 14px;color:var(--grigio);font-size:12px;">${used} articol${used===1?'o':'i'}</td>
         <td style="padding:11px 14px;">
           <div style="display:flex;gap:6px;">
-            <button onclick="openModal({type:'edit_tipo',tipo:${JSON.stringify(t).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎ Rinomina</button>
+            <button onclick="openModal({type:'edit_tipo',tipo:${JSON.stringify(t).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎ Modifica</button>
             <button onclick="confirmDeleteTipo('${t.id}',${used})" style="${btnStyle('danger',true)}">✕</button>
           </div>
         </td>
@@ -979,7 +993,7 @@ function renderTipi(){
         : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
             <table style="width:100%;border-collapse:collapse;font-size:13px;">
               <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-                ${['Tipo prodotto','Utilizzo',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+                ${['Tipo prodotto','Codice singolo','Utilizzo',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
               </tr></thead>
               <tbody>${rows}</tbody>
             </table>
@@ -1166,6 +1180,7 @@ function renderModal(giacenze){
   else if(m.type==='edit_tipo') html=tipoModal(m.tipo);
   else if(m.type==='nuovo_art'||m.type==='edit_art') html=articoloModal(m.art);
   else if(m.type==='note_art') html=noteArtModal(m.id);
+  else if(m.type==='codici_art') html=codiciArtModal(m.id);
   else if(m.type==='nuovo_utente') html=nuovoUtenteModal();
   else if(m.type==='reset_pass') html=resetPassModal(m.userId,m.userName);
   return `<div style="position:fixed;inset:0;background:#2c2e2f88;backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:998;padding:16px;">
@@ -1276,11 +1291,12 @@ function movimentoModal(tipo,preselectId,giacenze){
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Causale <span style="color:var(--verde);">*</span></span>
         <select id="mov-causale" style="${inpStyle()}">${causOpts}</select>
       </label>
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
+      <label id="mov-scad-label" style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
         <span>${tipo==='scarico'?'Lotto / Data di scadenza':'Data di scadenza'} <span style="color:var(--verde);">*</span></span>
         <div id="mov-scad-wrap">${scadSelect}</div>
       </label>
       <div id="mov-lotto-info"></div>
+      <div id="mov-codici-wrap"></div>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Note
         <input type="text" id="mov-note" style="${inpStyle()}">
       </label>
@@ -1455,7 +1471,7 @@ function comboSelect(a){
   const q=document.getElementById('mov-art-q'); q.value=a.codice+' — '+a.nome;
   document.getElementById('mov-art-x').style.display='block';
   comboClose(); movArtChange();
-  const qty=document.getElementById('mov-qty'); if(qty) qty.focus();
+  const next=document.getElementById('cod-in')||document.getElementById('cod-q')||document.getElementById('mov-qty'); if(next) next.focus();
 }
 function comboClear(){
   document.getElementById('mov-art').value='';
@@ -1466,6 +1482,10 @@ function comboClear(){
 // Riporta il form allo stato "nessun articolo selezionato"
 function movArtReset(){
   const infoEl=document.getElementById('mov-info'); if(infoEl) infoEl.innerHTML='';
+  const qw=document.getElementById('mov-qty-wrap'); if(qw) qw.style.display='';
+  const sl=document.getElementById('mov-scad-label'); if(sl) sl.style.display='';
+  const cw=document.getElementById('mov-codici-wrap'); if(cw) cw.innerHTML='';
+  window._movCodici=[]; window._movCodSel=new Set();
   const scEl=document.getElementById('mov-sc-toggle'); if(scEl) scEl.innerHTML='';
   const scad=document.getElementById('mov-scad');
   if(scad&&scad.tagName==='SELECT'){
@@ -1503,6 +1523,7 @@ function movArtChange(){
       <button id="sc-sc" onclick="setModalita('scatole','${art.id}')" style="flex:1;padding:9px;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;border:1.5px solid var(--bordo);background:#fff;color:var(--grigio);">Scatole intere</button>
     </div>`;
   } else if(scEl){ scEl.innerHTML=''; }
+  movSerialUI(art);
 }
 
 function setModalita(m,artId){
@@ -1531,6 +1552,7 @@ async function submitMovimento(tipo){
   const causale=document.getElementById('mov-causale')?.value;
   const note=document.getElementById('mov-note')?.value;
   if(!artId){ errEl.innerHTML=errBox('Seleziona un articolo.'); return; }
+  if(isSerial(art)) return submitMovimentoSerial(tipo,art);
   const modalita=window._movModalita||'pezzi';
   let qty=parseInt(qtyEl?.value)||0;
   if(modalita==='scatole') qty=qty*(art?.pezzi_scatola||0);
@@ -1550,6 +1572,266 @@ async function submitMovimento(tipo){
     closeModal(); showToast(`${tipo==='carico'?'Carico':'Scarico'} registrato.`);
     window._movModalita='pezzi';
   } catch(e){ errEl.innerHTML=errBox(e.message); if(btn){btn.innerHTML=`Conferma ${tipo}`;btn.disabled=false;} }
+}
+
+// ════════════════════════════════════════════════════════════════
+// CODICI SINGOLI PRODOTTI
+// ════════════════════════════════════════════════════════════════
+// Un articolo usa i codici singoli se il suo tipo ha il flag attivo
+function isSerial(art){
+  if(!art||!art.tipo_id) return false;
+  return !!state.tipi.find(t=>t.id===art.tipo_id)?.codice_singolo;
+}
+function codiciInCarico(artId){
+  return state.codici
+    .filter(c=>c.articolo_id===artId&&c.stato==='carico')
+    .sort((a,b)=>(a.scadenza||NO_SCAD_ISO).localeCompare(b.scadenza||NO_SCAD_ISO)||a.codice.localeCompare(b.codice));
+}
+function findCodice(artId,codice){
+  const cl=String(codice).toLowerCase();
+  return state.codici.find(c=>c.articolo_id===artId&&c.codice.toLowerCase()===cl);
+}
+function splitCodici(raw){
+  return String(raw||'').split(/[\s,;]+/).map(s=>s.trim()).filter(Boolean);
+}
+
+// Pulsante "#" per aprire l'elenco codici (solo articoli con codice singolo)
+function codiciBtn(a){
+  if(!isSerial(a)) return '';
+  const n=state.codici.filter(c=>c.articolo_id===a.id&&c.stato==='carico').length;
+  return `<button onclick="openModal({type:'codici_art',id:'${a.id}'})" title="Codici prodotto (${n} in carico)" style="background:#fff;color:var(--grigio-scuro);border:1px solid var(--bordo);border-radius:6px;padding:6px 9px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;line-height:1;white-space:nowrap;"># ${n}</button>`;
+}
+
+// Mostra/nasconde le parti del form movimento in base al tipo di articolo
+function movSerialUI(art){
+  const tipo=state.modal?.type;
+  const ser=isSerial(art);
+  const qtyWrap=document.getElementById('mov-qty-wrap');
+  const scEl=document.getElementById('mov-sc-toggle');
+  const scadLabel=document.getElementById('mov-scad-label');
+  const lottoInfo=document.getElementById('mov-lotto-info');
+  const wrap=document.getElementById('mov-codici-wrap');
+  window._movCodici=[]; window._movCodSel=new Set();
+  if(qtyWrap) qtyWrap.style.display=ser?'none':'';
+  if(ser&&scEl) scEl.innerHTML='';
+  if(ser) window._movModalita='pezzi';
+  if(scadLabel) scadLabel.style.display=(ser&&tipo==='scarico')?'none':'';
+  if(ser&&tipo==='scarico'&&lottoInfo) lottoInfo.innerHTML='';
+  if(!wrap) return;
+  if(!ser){ wrap.innerHTML=''; return; }
+  wrap.innerHTML=tipo==='carico'?codiciCaricoHTML():codiciScaricoHTML(art.id);
+  if(tipo==='carico') renderCodiciCarico(); else renderCodPick();
+  const btn=document.getElementById('mov-submit-btn');
+  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.style.cursor='pointer'; }
+}
+
+const _codLbl='display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--grigio-scuro);font-weight:600;';
+const _codHint='font-size:10px;color:var(--grigio-chiaro);font-weight:400;';
+
+// ── Carico: inserimento codici ──
+function codiciCaricoHTML(){
+  return `<div style="${_codLbl}">
+    <span>Codici prodotto <span style="color:var(--verde);">*</span> <span id="cod-count" style="font-weight:400;color:var(--grigio);"></span></span>
+    <div style="display:flex;gap:6px;">
+      <input id="cod-in" autocomplete="off" spellcheck="false" placeholder="Scansiona o digita il codice e premi Invio"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();addCodiciCarico(this.value);}"
+        onpaste="onCodPaste(event)" style="${inpStyle()}">
+      <button type="button" onclick="addCodiciCarico(document.getElementById('cod-in').value)" style="${btnStyle('outline',true)}">Aggiungi</button>
+    </div>
+    <span style="${_codHint}">Un codice per ogni pezzo: la quantità è il numero di codici inseriti. Puoi incollare più codici separati da spazio, virgola o a capo.</span>
+    <div id="cod-err"></div>
+    <div id="cod-chips" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+  </div>`;
+}
+function onCodPaste(e){
+  const txt=(e.clipboardData||window.clipboardData)?.getData('text')||'';
+  if(splitCodici(txt).length>1){ e.preventDefault(); addCodiciCarico(e.target.value+' '+txt); }
+}
+function addCodiciCarico(raw){
+  const artId=document.getElementById('mov-art')?.value;
+  const inp=document.getElementById('cod-in');
+  const errs=[];
+  splitCodici(raw).forEach(c=>{
+    if(window._movCodici.some(x=>x.codice.toLowerCase()===c.toLowerCase())){ errs.push(`${escHtml(c)}: già nell'elenco`); return; }
+    const ex=findCodice(artId,c);
+    if(ex&&ex.stato==='carico'){ errs.push(`${escHtml(c)}: già in carico`); return; }
+    window._movCodici.push({codice:c, existingId:ex?ex.id:null});
+  });
+  if(inp){ inp.value=''; inp.focus(); }
+  const errEl=document.getElementById('cod-err');
+  if(errEl) errEl.innerHTML=errs.length?`<div style="background:var(--rosso-chiaro);border:1px solid #c0392b44;border-radius:6px;color:var(--rosso);font-size:11px;font-weight:500;padding:8px 12px;">${errs.join('<br>')}</div>`:'';
+  renderCodiciCarico();
+}
+function removeCodiceCarico(i){ window._movCodici.splice(i,1); renderCodiciCarico(); }
+function renderCodiciCarico(){
+  const el=document.getElementById('cod-chips'); if(!el) return;
+  const list=window._movCodici||[];
+  el.innerHTML=list.map((c,i)=>`<span style="display:inline-flex;align-items:center;gap:6px;background:var(--verde-pale);border:1px solid var(--verde-chiaro);border-radius:14px;padding:4px 6px 4px 10px;font-size:12px;font-family:monospace;color:var(--testo);">${escHtml(c.codice)}${c.existingId?' <span style="font-family:Raleway,sans-serif;font-size:10px;color:var(--grigio);">rientro</span>':''}<button type="button" onclick="removeCodiceCarico(${i})" title="Rimuovi" style="border:none;background:transparent;color:var(--grigio);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;">×</button></span>`).join('');
+  const cnt=document.getElementById('cod-count');
+  if(cnt) cnt.textContent=list.length?`— ${list.length} ${list.length===1?'pezzo':'pezzi'}`:'';
+}
+
+// ── Scarico: selezione codici ──
+function codiciScaricoHTML(artId){
+  const disp=codiciInCarico(artId);
+  if(!disp.length) return `<div style="${_codLbl}"><span>Codici da scaricare <span style="color:var(--verde);">*</span></span>
+    <div style="background:var(--arancio-chiaro);border:1px solid #e67e2244;border-radius:6px;color:var(--arancio);font-size:12px;font-weight:500;padding:10px 14px;">Nessun codice in carico per questo articolo: non è possibile scaricarlo.</div></div>`;
+  return `<div style="${_codLbl}">
+    <span>Codici da scaricare <span style="color:var(--verde);">*</span> <span id="cod-count" style="font-weight:400;color:var(--grigio);"></span></span>
+    <input id="cod-q" autocomplete="off" spellcheck="false" placeholder="🔍 Scansiona o filtra i codici…"
+      oninput="renderCodPick()" onkeydown="onCodQKey(event)" style="${inpStyle()}">
+    <span style="${_codHint}">Spunta i codici, oppure scansiona il codice e premi Invio. Ordinati per scadenza.</span>
+    <div id="cod-err"></div>
+    <div id="cod-pick" style="border:1px solid var(--bordo);border-radius:8px;max-height:220px;overflow-y:auto;background:#fff;"></div>
+  </div>`;
+}
+function renderCodPick(){
+  const el=document.getElementById('cod-pick'); if(!el) return;
+  const artId=document.getElementById('mov-art')?.value;
+  const q=(document.getElementById('cod-q')?.value||'').trim().toLowerCase();
+  const sel=window._movCodSel||new Set();
+  const rows=codiciInCarico(artId).filter(c=>!q||c.codice.toLowerCase().includes(q));
+  el.innerHTML=rows.length?rows.map(c=>`<label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--bordo);cursor:pointer;font-weight:400;background:${sel.has(c.id)?'var(--verde-pale)':'#fff'};">
+      <input type="checkbox" ${sel.has(c.id)?'checked':''} onchange="toggleCodSel('${c.id}')" style="width:15px;height:15px;accent-color:var(--verde);cursor:pointer;">
+      <span style="font-family:monospace;font-size:13px;color:var(--testo);flex:1;word-break:break-all;">${escHtml(c.codice)}</span>
+      <span style="font-size:11px;color:var(--grigio);white-space:nowrap;">Scad. ${fmtData(c.scadenza||NO_SCAD_ISO)}</span>
+    </label>`).join('')
+    :'<div style="padding:12px 14px;font-size:12px;color:var(--grigio-chiaro);font-weight:400;">Nessun codice trovato.</div>';
+  const cnt=document.getElementById('cod-count');
+  if(cnt) cnt.textContent=sel.size?`— ${sel.size} selezionat${sel.size===1?'o':'i'}`:'';
+}
+function toggleCodSel(id){
+  const s=window._movCodSel; if(s.has(id)) s.delete(id); else s.add(id);
+  renderCodPick();
+}
+function onCodQKey(e){
+  if(e.key!=='Enter') return;
+  e.preventDefault();
+  const artId=document.getElementById('mov-art')?.value;
+  const v=e.target.value.trim(); if(!v) return;
+  const errEl=document.getElementById('cod-err');
+  const disp=codiciInCarico(artId);
+  let hit=disp.find(c=>c.codice.toLowerCase()===v.toLowerCase());
+  if(!hit){ const f=disp.filter(c=>c.codice.toLowerCase().includes(v.toLowerCase())); if(f.length===1) hit=f[0]; }
+  if(hit){
+    window._movCodSel.add(hit.id);
+    if(errEl) errEl.innerHTML='';
+    e.target.value='';
+  } else if(errEl){
+    const ex=findCodice(artId,v);
+    errEl.innerHTML=`<div style="background:var(--rosso-chiaro);border:1px solid #c0392b44;border-radius:6px;color:var(--rosso);font-size:11px;font-weight:500;padding:8px 12px;">${escHtml(v)}: ${ex?'già scaricato':'codice non trovato per questo articolo'}</div>`;
+    e.target.select();
+  }
+  renderCodPick();
+}
+
+// ── Salvataggio movimenti con codici ──
+async function submitMovimentoSerial(tipo,art){
+  const errEl=document.getElementById('mov-err'); errEl.innerHTML='';
+  const causale=document.getElementById('mov-causale')?.value;
+  const note=document.getElementById('mov-note')?.value||null;
+  const btn=document.getElementById('mov-submit-btn');
+  const busy=on=>{ if(btn){ btn.disabled=on; btn.innerHTML=on?'<span class="spinner"></span>Salvataggio…':`Conferma ${tipo}`; } };
+  const now=nowStr();
+  const who={utente:state.utente.username,nome_utente:state.utente.nome_completo};
+  const logRow=(q)=>({id:uid(),tipo,utente:state.utente.username,nome_completo:state.utente.nome_completo,articolo_id:art.id,quantita:q,causale,data:now});
+
+  if(tipo==='carico'){
+    const codici=window._movCodici||[];
+    const noScad=document.getElementById('cb-no-scad')?.checked||false;
+    const scad=noScad?NO_SCAD_ISO:(document.getElementById('mov-scad')?.value||'');
+    if(!codici.length){ errEl.innerHTML=errBox('Inserisci almeno un codice prodotto.'); return; }
+    if(!scad){ errEl.innerHTML=errBox('Inserisci la data di scadenza.'); return; }
+    const movId=uid();
+    const nuovi=codici.filter(c=>!c.existingId).map(c=>({id:uid(),articolo_id:art.id,codice:c.codice,scadenza:scad,stato:'carico',mov_carico_id:movId,data_carico:now}));
+    const rientri=codici.filter(c=>c.existingId);
+    busy(true);
+    try{
+      if(nuovi.length) await db.insert('magazzino_articoli_codici',nuovi);
+      try{
+        await db.insert('magazzino_movimenti',{id:movId,articolo_id:art.id,tipo:'carico',quantita:codici.length,causale,scadenza:scad,note,is_scatola:false,n_scatole:null,...who,data:now});
+      }catch(e){
+        if(nuovi.length) await db.delete('magazzino_articoli_codici',`id=in.(${nuovi.map(n=>n.id).join(',')})`).catch(()=>{});
+        throw e;
+      }
+      if(rientri.length) await db.update('magazzino_articoli_codici',
+        {stato:'carico',scadenza:scad,mov_carico_id:movId,data_carico:now,mov_scarico_id:null,data_scarico:null},
+        `id=in.(${rientri.map(r=>r.existingId).join(',')})`);
+      await db.insert('magazzino_log_accessi',logRow(codici.length));
+      await loadAll(); closeModal(); showToast(`Carico registrato: ${codici.length} ${codici.length===1?'codice':'codici'}.`);
+    }catch(e){
+      const m=String(e.message||e);
+      errEl.innerHTML=errBox(m.includes('duplicate')||m.includes('23505')?'Uno o più codici esistono già per questo articolo. Ricarica la pagina e riprova.':m);
+      busy(false);
+    }
+    return;
+  }
+
+  // Scarico: un movimento per ogni lotto (scadenza) dei codici selezionati
+  const selIds=[...(window._movCodSel||[])];
+  const sel=state.codici.filter(c=>selIds.includes(c.id)&&c.stato==='carico');
+  if(!sel.length){ errEl.innerHTML=errBox('Seleziona almeno un codice da scaricare.'); return; }
+  const gruppi={};
+  sel.forEach(c=>{ const k=c.scadenza||NO_SCAD_ISO; (gruppi[k]=gruppi[k]||[]).push(c); });
+  const lotti=calcLottiPerArticolo(art.id);
+  for(const [scad,list] of Object.entries(gruppi)){
+    if(list.length>(lotti[scad]??0)){ errEl.innerHTML=errBox(`Lotto ${fmtData(scad)}: la giacenza del lotto (${fmt(lotti[scad]??0)}) è inferiore ai codici selezionati (${list.length}).`); return; }
+  }
+  busy(true);
+  try{
+    for(const [scad,list] of Object.entries(gruppi)){
+      const movId=uid();
+      await db.insert('magazzino_movimenti',{id:movId,articolo_id:art.id,tipo:'scarico',quantita:list.length,causale,scadenza:scad,note,is_scatola:false,n_scatole:null,...who,data:now});
+      await db.update('magazzino_articoli_codici',{stato:'scaricato',mov_scarico_id:movId,data_scarico:now},`id=in.(${list.map(c=>c.id).join(',')})`);
+      await db.insert('magazzino_log_accessi',logRow(list.length));
+    }
+    await loadAll(); closeModal(); showToast(`Scarico registrato: ${sel.length} ${sel.length===1?'codice':'codici'}.`);
+  }catch(e){ errEl.innerHTML=errBox(e.message); busy(false); }
+}
+
+// ── Modale elenco codici di un articolo ──
+function codiciArtModal(id){
+  const a=state.articoli.find(x=>x.id===id);
+  if(!a) return `${modalHeader('Codici prodotto')}<div>Articolo non trovato.</div>`;
+  return `${modalHeader('Codici prodotto','var(--verde)')}
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        ${pill(escHtml(a.codice),'var(--grigio)')}<span style="font-weight:600;font-size:14px;">${escHtml(a.nome)}</span>
+      </div>
+      <div id="cod-modal-seg"></div>
+      <input id="cod-modal-q" autocomplete="off" spellcheck="false" placeholder="🔍 Filtra per codice…" value="${escHtml(window._codQ||'')}"
+        oninput="window._codQ=this.value;updateCodModal('${a.id}')" style="${inpStyle()}">
+      <div id="cod-modal-list" style="border:1px solid var(--bordo);border-radius:8px;max-height:340px;overflow-y:auto;"></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:6px;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Chiudi</button>
+      </div>
+    </div>`;
+}
+function updateCodModal(id){
+  const seg=document.getElementById('cod-modal-seg');
+  const list=document.getElementById('cod-modal-list');
+  if(!seg||!list) return;
+  const all=state.codici.filter(c=>c.articolo_id===id);
+  const stato=window._codStato||'carico';
+  const q=(window._codQ||'').trim().toLowerCase();
+  const n={carico:all.filter(c=>c.stato==='carico').length,scaricato:all.filter(c=>c.stato==='scaricato').length,tutti:all.length};
+  const segBtn=(k,label)=>{ const on=stato===k; return `<button onclick="window._codStato='${k}';updateCodModal('${id}')" style="flex:1;padding:8px;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;border:1.5px solid ${on?'var(--verde)':'var(--bordo)'};background:${on?'var(--verde-pale)':'#fff'};color:${on?'var(--verde-scuro)':'var(--grigio)'};">${label} <span style="font-weight:700;">${n[k]}</span></button>`; };
+  seg.innerHTML=`<div style="display:flex;gap:6px;">${segBtn('carico','In carico')}${segBtn('scaricato','Scaricati')}${segBtn('tutti','Tutti')}</div>`;
+  const rows=all
+    .filter(c=>stato==='tutti'||c.stato===stato)
+    .filter(c=>!q||c.codice.toLowerCase().includes(q))
+    .sort((a,b)=>(a.stato===b.stato?0:a.stato==='carico'?-1:1)||(a.scadenza||NO_SCAD_ISO).localeCompare(b.scadenza||NO_SCAD_ISO)||a.codice.localeCompare(b.codice));
+  list.innerHTML=rows.length?rows.map(c=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--bordo);">
+      <div style="min-width:0;">
+        <div style="font-family:monospace;font-size:13px;font-weight:600;color:var(--testo);word-break:break-all;">${escHtml(c.codice)}</div>
+        <div style="font-size:10px;color:var(--grigio);margin-top:2px;">Carico ${escHtml(c.data_carico||'—')}${c.data_scarico?' · Scarico '+escHtml(c.data_scarico):''}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;white-space:nowrap;">
+        ${c.stato==='carico'?pill('In carico','var(--verde)'):pill('Scaricato','var(--grigio)')}
+        <span style="font-size:11px;color:var(--grigio);">Scad. ${fmtData(c.scadenza||NO_SCAD_ISO)}</span>
+      </div>
+    </div>`).join('')
+    :`<div style="padding:24px 14px;text-align:center;font-size:12px;color:var(--grigio-chiaro);">${all.length?'Nessun codice corrisponde ai filtri.':'Nessun codice registrato per questo articolo.'}</div>`;
 }
 
 // Genera il prossimo codice articolo in formato ARTXXX
@@ -1603,12 +1885,18 @@ function artBadges(art){
 // Tipo prodotto modal
 function tipoModal(tipo){
   const isEdit=!!tipo;
-  return `${modalHeader(isEdit?'Rinomina tipo':'Nuovo tipo prodotto')}
+  return `${modalHeader(isEdit?'Modifica tipo':'Nuovo tipo prodotto')}
     <div style="display:flex;flex-direction:column;gap:14px;">
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
         <span>Nome tipo <span style="color:var(--verde);">*</span></span>
-        <input id="tipo-nome" value="${tipo?.nome||''}" placeholder="es. Farmaco, Dispositivo medico…"
+        <input id="tipo-nome" value="${escHtml(tipo?.nome||'')}" placeholder="es. Farmaco, Dispositivo medico…"
           style="${inpStyle()}" autofocus>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:10px;font-size:12px;color:var(--grigio-scuro);font-weight:600;cursor:pointer;padding:10px 12px;background:var(--grigio-sfondo);border-radius:6px;border:1px solid var(--bordo);">
+        <input type="checkbox" id="tipo-cs" ${tipo?.codice_singolo?'checked':''} style="width:15px;height:15px;margin-top:1px;cursor:pointer;accent-color:var(--verde);">
+        <span>Abilita codice singolo prodotto
+          <span style="display:block;font-size:11px;color:var(--grigio);font-weight:400;margin-top:3px;">Ogni pezzo ha un proprio codice univoco: nel carico si inseriscono i codici, nello scarico vanno selezionati.</span>
+        </span>
       </label>
       <div id="tipo-err"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
@@ -1621,12 +1909,13 @@ function tipoModal(tipo){
 async function submitTipo(existingId){
   const errEl=document.getElementById('tipo-err'); errEl.innerHTML='';
   const nome=document.getElementById('tipo-nome').value.trim();
+  const codice_singolo=document.getElementById('tipo-cs').checked;
   if(!nome){ errEl.innerHTML=errBox('Il nome è obbligatorio.'); return; }
   const dup=state.tipi.find(t=>t.nome.toLowerCase()===nome.toLowerCase()&&t.id!==existingId);
   if(dup){ errEl.innerHTML=errBox('Tipo già esistente.'); return; }
   try{
-    if(existingId) await db.update('magazzino_articoli_tipo',{nome},`id=eq.${existingId}`);
-    else await db.insert('magazzino_articoli_tipo',{id:uid(),nome});
+    if(existingId) await db.update('magazzino_articoli_tipo',{nome,codice_singolo},`id=eq.${existingId}`);
+    else await db.insert('magazzino_articoli_tipo',{id:uid(),nome,codice_singolo});
     await loadAll(); closeModal(); showToast(existingId?'Tipo aggiornato.':'Tipo creato.');
   }catch(e){ errEl.innerHTML=errBox(e.message); }
 }
@@ -1787,7 +2076,7 @@ function btnStyle(variant='primary',small=false,full=false){
   return `${V[variant]||V.primary}border-radius:6px;font-family:inherit;font-weight:600;font-size:${small?11:13}px;padding:${small?'6px 14px':'10px 22px'};cursor:pointer;letter-spacing:.3px;${full?'width:100%;':''}`;
 }
 function pill(text,color='var(--verde)'){ return `<span style="background:${color}22;color:${color};border:1px solid ${color}55;border-radius:20px;font-size:10px;font-weight:700;padding:2px 9px;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">${text}</span>`; }
-function inp(id,label,placeholder,type='text',required=false){ return `<label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">${label}${required?'<span style="color:var(--verde);"> *</span>':''}<input id="${id}" type="${type}" placeholder="${placeholder}" style="${inpStyle()}"></label>`; }
+function inp(id,label,placeholder,type='text',required=false){ return `<label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>${label}${required?'<span style="color:var(--verde);"> *</span>':''}</span><input id="${id}" type="${type}" placeholder="${placeholder}" style="${inpStyle()}"></label>`; }
 function val(id){ return document.getElementById(id)?.value||''; }
 function errBox(msg){ return `<div style="background:var(--rosso-chiaro);border:1px solid #c0392b44;border-radius:6px;color:var(--rosso);font-size:12px;padding:10px 14px;margin-top:10px;">${msg}</div>`; }
 function setLoading(btnId,on){ const b=document.getElementById(btnId); if(b){ b.disabled=on; b.innerHTML=on?'<span class="spinner"></span>Caricamento…':b.innerHTML; } }
