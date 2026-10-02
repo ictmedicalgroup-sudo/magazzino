@@ -51,6 +51,18 @@ const db = {
     if(!r.ok) throw new Error(await r.text());
     return r.json();
   },
+  // Legge TUTTE le righe a pagine: Supabase restituisce al massimo 1000 righe per richiesta.
+  // L'ordinamento deve includere una colonna univoca (es. id) per non perdere o duplicare righe tra le pagine.
+  async selectAll(table, params='', pageSize=1000){
+    const all=[];
+    for(let offset=0;;){
+      const page=await this.select(table, `${params}${params?'&':''}limit=${pageSize}&offset=${offset}`);
+      if(!page.length) break;
+      all.push(...page);
+      offset+=page.length;
+    }
+    return all;
+  },
   async insert(table, data){
     const r = await fetch(`${SUPA_URL}/rest/v1/${table}`, {
       method:'POST', headers, body: JSON.stringify(data)
@@ -84,6 +96,11 @@ const fmtData = iso => {
   return iso.split('-').reverse().join('/');
 };
 const isNoScad = iso => iso === NO_SCAD_ISO;
+// "1/10/2026, 15:04:00" o "01/10/2026, 15:04:00" → timestamp (0 se non leggibile)
+const parseDataIt = s => {
+  const m=String(s||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4}),?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  return m?new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+(m[6]||0)).getTime():0;
+};
 const tipoNome = id => state.tipi.find(t=>t.id===id)?.nome || '—';
 
 async function sha256(str){
@@ -134,14 +151,16 @@ function calcGiacenze(){
 // ════════════════════════════════════════════════════════════════
 async function loadAll(){
   const [articoli, movimenti, utenti, log, tipi] = await Promise.all([
-    db.select('magazzino_articoli','order=codice.asc'),
-    db.select('magazzino_movimenti','order=data.desc'),
+    db.selectAll('magazzino_articoli','order=codice.asc,id.asc'),
+    db.selectAll('magazzino_movimenti','order=id.asc'),
     db.select('magazzino_utenti','order=created_at.asc'),
     db.select('magazzino_log_accessi','order=data.desc&limit=500'),
     db.select('magazzino_articoli_tipo','order=nome.asc'),
   ]);
   // Codici singoli: se la tabella non esiste ancora l'app continua a funzionare
-  const codici = await db.select('magazzino_articoli_codici','order=codice.asc').catch(()=>[]);
+  const codici = await db.selectAll('magazzino_articoli_codici','order=codice.asc,id.asc').catch(()=>[]);
+  // La data è salvata come testo (gg/mm/aaaa, hh:mm:ss): ordino i movimenti dal più recente
+  movimenti.sort((a,b)=>parseDataIt(b.data)-parseDataIt(a.data));
   state.codici     = codici;
   state.articoli   = articoli;
   state.movimenti  = movimenti;
@@ -441,7 +460,7 @@ function mainHTML(){
   const isAdmin = state.utente?.ruolo==='admin';
   const TABS = isAdmin ? TABS_ADMIN : TABS_USER;
   const giacenze = calcGiacenze();
-  const alertList = Object.values(giacenze).filter(g=>g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min);
+  const alertList = Object.values(giacenze).filter(g=>g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min);
   const mob = state.isMobile;
 
   const tabsHTML = TABS.map(t=>`
@@ -533,7 +552,7 @@ function renderGiacenze(giacenze,alertList){
   const filtro=window._giacFiltro||'tutti';
   const rows=Object.values(giacenze).filter(g=>{
     const m=!search||g.art.codice.toLowerCase().includes(search)||g.art.nome.toLowerCase().includes(search)||(g.art.barcode&&g.art.barcode.toLowerCase().includes(search));
-    const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
+    const sotto=g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min;
     if(filtro==='alert'&&!sotto) return false;
     if(filtro==='ok'&&sotto)     return false;
     return m;
@@ -573,7 +592,7 @@ function renderGiacenze(giacenze,alertList){
 }
 
 function mobileGiacenzaCard(g){
-  const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
+  const sotto=g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min;
   return `<div style="background:#fff;border:1px solid ${sotto?'var(--rosso)':'var(--bordo)'};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;">
       <div>${pill(g.art.codice,'var(--grigio)')}<div style="font-weight:600;font-size:14px;margin-top:6px;">${g.art.nome}${artBadges(g.art)}</div></div>
@@ -591,7 +610,7 @@ function mobileGiacenzaCard(g){
 }
 
 function desktopGiacenzaRow(g){
-  const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
+  const sotto=g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min;
   const pzSc=g.art.pezzi_scatola&&g.pezzi>0?`<span style="color:var(--grigio-chiaro);font-size:10px;margin-left:6px;">(${Math.floor(g.pezzi/g.art.pezzi_scatola)}sc+${g.pezzi%g.art.pezzi_scatola})</span>`:'';
   return `<tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
     <td style="padding:11px 14px;">${pill(g.art.codice,'var(--grigio)')}</td>
@@ -616,7 +635,7 @@ function updateGiacenzeTable(){
   const filtro=window._giacFiltro||'tutti';
   const rows=Object.values(giacenze).filter(g=>{
     const m=!search||g.art.codice.toLowerCase().includes(search)||g.art.nome.toLowerCase().includes(search)||(g.art.barcode&&g.art.barcode.toLowerCase().includes(search));
-    const sotto=g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min;
+    const sotto=g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min;
     if(filtro==='alert'&&!sotto) return false;
     if(filtro==='ok'&&sotto) return false;
     return m;
@@ -646,7 +665,7 @@ function exportGiacenze(){
   exportCSV(Object.values(giacenze).map(g=>({
     codice:g.art.codice,nome:g.art.nome,barcode:g.art.barcode||'',um:g.art.um,
     pezzi:g.pezzi,pz_sc:g.art.pezzi_scatola||'',scorta_min:g.art.scorta_min||'',
-    stato:g.art.scorta_min!=null&&g.pezzi<=g.art.scorta_min?'SOTTO SCORTA':'Regolare'
+    stato:g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min?'SOTTO SCORTA':'Regolare'
   })),[
     {key:'codice',label:'Codice'},{key:'nome',label:'Descrizione'},{key:'barcode',label:'Barcode'},
     {key:'um',label:'U.M.'},{key:'pezzi',label:'Giacenza'},{key:'pz_sc',label:'Pz/Sc'},
@@ -799,7 +818,7 @@ function renderArticoli(giacenze){
       )
     : state.articoli;
 
-  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=a.scorta_min!=null&&(g?.pezzi??0)<=a.scorta_min; return `
+  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=a.scorta_min!=null&&(g?.pezzi??0)<a.scorta_min; return `
     <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
       <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
@@ -856,7 +875,7 @@ function updateArticoliTable(){
     wrap.innerHTML='<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(search?'Nessun articolo trovato.':'Nessun articolo.')+'</div>';
     return;
   }
-  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=a.scorta_min!=null&&(g?.pezzi??0)<=a.scorta_min; return `
+  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=a.scorta_min!=null&&(g?.pezzi??0)<a.scorta_min; return `
     <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
       <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
@@ -1202,7 +1221,7 @@ function modalHeader(title,color){
 
 // Quick scan
 function quickScanModal(art,giacenze){
-  const g=giacenze[art.id]; const sotto=art.scorta_min!=null&&(g?.pezzi??0)<=art.scorta_min;
+  const g=giacenze[art.id]; const sotto=art.scorta_min!=null&&(g?.pezzi??0)<art.scorta_min;
   return `${modalHeader('Articolo rilevato')}
     <div style="display:flex;flex-direction:column;gap:16px;">
       <div style="background:var(--grigio-sfondo);border-radius:8px;padding:16px 18px;">
@@ -1241,7 +1260,7 @@ function movimentoModal(tipo,preselectId,giacenze){
   const selArt=preselectId?state.articoli.find(a=>a.id===preselectId):null;
   const artOpts=state.articoli.map(a=>`<option value="${a.id}" ${preselectId===a.id?'selected':''}>${a.codice} — ${a.nome}</option>`).join('');
   const causOpts=causali.map((c,i)=>`<option value="${c}" ${i===0?'selected':''}>${c}</option>`).join('');
-  const infoBar=selArt?(()=>{ const g=giacenze[selArt.id]; return `<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${selArt.nome}</span><span>Giacenza: <b style="color:var(--testo);">${fmt(g?.pezzi??0)} ${selArt.um}</b></span>${selArt.pezzi_scatola?`<span>Pz/sc: <b style="color:var(--testo);">${selArt.pezzi_scatola}</b></span>`:''} ${selArt.scorta_min!=null?`<span>Min: <b style="color:${(g?.pezzi??0)<=selArt.scorta_min?'var(--rosso)':'var(--testo)'};">${fmt(selArt.scorta_min)}</b></span>`:''}</div>`; })():'';
+  const infoBar=selArt?(()=>{ const g=giacenze[selArt.id]; return `<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${selArt.nome}</span><span>Giacenza: <b style="color:var(--testo);">${fmt(g?.pezzi??0)} ${selArt.um}</b></span>${selArt.pezzi_scatola?`<span>Pz/sc: <b style="color:var(--testo);">${selArt.pezzi_scatola}</b></span>`:''} ${selArt.scorta_min!=null?`<span>Min: <b style="color:${(g?.pezzi??0)<selArt.scorta_min?'var(--rosso)':'var(--testo)'};">${fmt(selArt.scorta_min)}</b></span>`:''}</div>`; })():'';
 
   // Per scarico: pre-calcola le scadenze disponibili se articolo pre-selezionato
   const scadSelect = tipo==='scarico' && selArt
