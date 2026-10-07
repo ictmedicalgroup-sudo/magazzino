@@ -460,7 +460,7 @@ function mainHTML(){
   const isAdmin = state.utente?.ruolo==='admin';
   const TABS = isAdmin ? TABS_ADMIN : TABS_USER;
   const giacenze = calcGiacenze();
-  const alertList = Object.values(giacenze).filter(g=>g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min);
+  const alertList = Object.values(giacenze).filter(g=>scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min);
   const mob = state.isMobile;
 
   const tabsHTML = TABS.map(t=>`
@@ -552,7 +552,7 @@ function renderGiacenze(giacenze,alertList){
   const filtro=window._giacFiltro||'tutti';
   const rows=Object.values(giacenze).filter(g=>{
     const m=!search||g.art.codice.toLowerCase().includes(search)||g.art.nome.toLowerCase().includes(search)||(g.art.barcode&&g.art.barcode.toLowerCase().includes(search));
-    const sotto=g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min;
+    const sotto=scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min;
     if(filtro==='alert'&&!sotto) return false;
     if(filtro==='ok'&&sotto)     return false;
     return m;
@@ -592,14 +592,14 @@ function renderGiacenze(giacenze,alertList){
 }
 
 function mobileGiacenzaCard(g){
-  const sotto=g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min;
+  const sotto=scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min;
   return `<div style="background:#fff;border:1px solid ${sotto?'var(--rosso)':'var(--bordo)'};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;">
       <div>${pill(g.art.codice,'var(--grigio)')}<div style="font-weight:600;font-size:14px;margin-top:6px;">${g.art.nome}${artBadges(g.art)}</div></div>
       <div style="text-align:right;"><div style="font-weight:700;font-size:22px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</div><div style="font-size:11px;color:var(--grigio);">${g.art.um}</div></div>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
-      <div>${g.art.scorta_min!=null?(sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')):''}</div>
+      <div>${scortaAttiva(g.art)?(sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')):''}</div>
       <div style="display:flex;gap:8px;">
         ${codiciBtn(g.art)}${noteBtn(g.art)}
         <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
@@ -610,7 +610,7 @@ function mobileGiacenzaCard(g){
 }
 
 function desktopGiacenzaRow(g){
-  const sotto=g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min;
+  const sotto=scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min;
   const pzSc=g.art.pezzi_scatola&&g.pezzi>0?`<span style="color:var(--grigio-chiaro);font-size:10px;margin-left:6px;">(${Math.floor(g.pezzi/g.art.pezzi_scatola)}sc+${g.pezzi%g.art.pezzi_scatola})</span>`:'';
   return `<tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
     <td style="padding:11px 14px;">${pill(g.art.codice,'var(--grigio)')}</td>
@@ -619,8 +619,8 @@ function desktopGiacenzaRow(g){
     <td style="padding:11px 14px;color:var(--grigio);">${g.art.um}</td>
     <td style="padding:11px 14px;"><span style="font-weight:700;font-size:15px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</span>${pzSc}</td>
     <td style="padding:11px 14px;color:var(--grigio);">${g.art.pezzi_scatola||'—'}</td>
-    <td style="padding:11px 14px;color:var(--grigio);">${g.art.scorta_min!=null?fmt(g.art.scorta_min):'—'}</td>
-    <td style="padding:11px 14px;">${g.art.scorta_min==null?'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>':sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')}</td>
+    <td style="padding:11px 14px;color:var(--grigio);">${scortaAttiva(g.art)?fmt(g.art.scorta_min):'—'}</td>
+    <td style="padding:11px 14px;">${!scortaAttiva(g.art)?'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>':sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')}</td>
     <td style="padding:11px 14px;"><div style="display:flex;gap:6px;justify-content:flex-end;">
       ${codiciBtn(g.art)}${noteBtn(g.art)}
       <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
@@ -635,7 +635,7 @@ function updateGiacenzeTable(){
   const filtro=window._giacFiltro||'tutti';
   const rows=Object.values(giacenze).filter(g=>{
     const m=!search||g.art.codice.toLowerCase().includes(search)||g.art.nome.toLowerCase().includes(search)||(g.art.barcode&&g.art.barcode.toLowerCase().includes(search));
-    const sotto=g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min;
+    const sotto=scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min;
     if(filtro==='alert'&&!sotto) return false;
     if(filtro==='ok'&&sotto) return false;
     return m;
@@ -665,7 +665,7 @@ function exportGiacenze(){
   exportCSV(Object.values(giacenze).map(g=>({
     codice:g.art.codice,nome:g.art.nome,barcode:g.art.barcode||'',um:g.art.um,
     pezzi:g.pezzi,pz_sc:g.art.pezzi_scatola||'',scorta_min:g.art.scorta_min||'',
-    stato:g.art.scorta_min!=null&&g.pezzi<g.art.scorta_min?'SOTTO SCORTA':'Regolare'
+    stato:scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min?'SOTTO SCORTA':'Regolare'
   })),[
     {key:'codice',label:'Codice'},{key:'nome',label:'Descrizione'},{key:'barcode',label:'Barcode'},
     {key:'um',label:'U.M.'},{key:'pezzi',label:'Giacenza'},{key:'pz_sc',label:'Pz/Sc'},
@@ -818,7 +818,7 @@ function renderArticoli(giacenze){
       )
     : state.articoli;
 
-  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=a.scorta_min!=null&&(g?.pezzi??0)<a.scorta_min; return `
+  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=scortaAttiva(a)&&(g?.pezzi??0)<a.scorta_min; return `
     <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
       <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
@@ -826,7 +826,7 @@ function renderArticoli(giacenze){
       <td style="padding:11px 14px;font-weight:600;">${a.nome}${artBadges(a)}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
-      <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
+      <td style="padding:11px 14px;">${scortaAttiva(a)?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
       <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)}</span></td>
       <td style="padding:11px 14px;"><div style="display:flex;gap:6px;justify-content:flex-end;">
         ${codiciBtn(a)}${noteBtn(a)}
@@ -875,7 +875,7 @@ function updateArticoliTable(){
     wrap.innerHTML='<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(search?'Nessun articolo trovato.':'Nessun articolo.')+'</div>';
     return;
   }
-  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=a.scorta_min!=null&&(g?.pezzi??0)<a.scorta_min; return `
+  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=scortaAttiva(a)&&(g?.pezzi??0)<a.scorta_min; return `
     <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
       <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
@@ -883,7 +883,7 @@ function updateArticoliTable(){
       <td style="padding:11px 14px;font-weight:600;">${a.nome}${artBadges(a)}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
       <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
-      <td style="padding:11px 14px;">${a.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
+      <td style="padding:11px 14px;">${scortaAttiva(a)?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
       <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)}</span></td>
       <td style="padding:11px 14px;"><div style="display:flex;gap:6px;justify-content:flex-end;">
         ${codiciBtn(a)}${noteBtn(a)}
@@ -1221,7 +1221,7 @@ function modalHeader(title,color){
 
 // Quick scan
 function quickScanModal(art,giacenze){
-  const g=giacenze[art.id]; const sotto=art.scorta_min!=null&&(g?.pezzi??0)<art.scorta_min;
+  const g=giacenze[art.id]; const sotto=scortaAttiva(art)&&(g?.pezzi??0)<art.scorta_min;
   return `${modalHeader('Articolo rilevato')}
     <div style="display:flex;flex-direction:column;gap:16px;">
       <div style="background:var(--grigio-sfondo);border-radius:8px;padding:16px 18px;">
@@ -1260,7 +1260,7 @@ function movimentoModal(tipo,preselectId,giacenze){
   const selArt=preselectId?state.articoli.find(a=>a.id===preselectId):null;
   const artOpts=state.articoli.map(a=>`<option value="${a.id}" ${preselectId===a.id?'selected':''}>${a.codice} — ${a.nome}</option>`).join('');
   const causOpts=causali.map((c,i)=>`<option value="${c}" ${i===0?'selected':''}>${c}</option>`).join('');
-  const infoBar=selArt?(()=>{ const g=giacenze[selArt.id]; return `<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${selArt.nome}</span><span>Giacenza: <b style="color:var(--testo);">${fmt(g?.pezzi??0)} ${selArt.um}</b></span>${selArt.pezzi_scatola?`<span>Pz/sc: <b style="color:var(--testo);">${selArt.pezzi_scatola}</b></span>`:''} ${selArt.scorta_min!=null?`<span>Min: <b style="color:${(g?.pezzi??0)<selArt.scorta_min?'var(--rosso)':'var(--testo)'};">${fmt(selArt.scorta_min)}</b></span>`:''}</div>`; })():'';
+  const infoBar=selArt?(()=>{ const g=giacenze[selArt.id]; return `<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${selArt.nome}</span><span>Giacenza: <b style="color:var(--testo);">${fmt(g?.pezzi??0)} ${selArt.um}</b></span>${selArt.pezzi_scatola?`<span>Pz/sc: <b style="color:var(--testo);">${selArt.pezzi_scatola}</b></span>`:''} ${scortaAttiva(selArt)?`<span>Min: <b style="color:${(g?.pezzi??0)<selArt.scorta_min?'var(--rosso)':'var(--testo)'};">${fmt(selArt.scorta_min)}</b></span>`:''}</div>`; })():'';
 
   // Per scarico: pre-calcola le scadenze disponibili se articolo pre-selezionato
   const scadSelect = tipo==='scarico' && selArt
@@ -1597,6 +1597,8 @@ async function submitMovimento(tipo){
 // CODICI SINGOLI PRODOTTI
 // ════════════════════════════════════════════════════════════════
 // Un articolo usa i codici singoli se il suo tipo ha il flag attivo
+// Alert sotto scorta: solo se la scorta minima è impostata e l'articolo NON usa i codici singoli
+function scortaAttiva(art){ return !!art && art.scorta_min!=null && !isSerial(art); }
 function isSerial(art){
   if(!art||!art.tipo_id) return false;
   return !!state.tipi.find(t=>t.id===art.tipo_id)?.codice_singolo;
