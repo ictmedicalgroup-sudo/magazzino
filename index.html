@@ -246,6 +246,7 @@ async function saveArticolo(art, isNew){
     tipo_id:       art.tipo_id||null,
     frigo:         art.frigo===true||art.frigo==='true'||false,
     note:          (art.note&&String(art.note).trim())||null,
+    flag:          FLAGS[art.flag]?art.flag:null,
     pezzi_scatola: toInt(art.pezzi_scatola),
     scorta_min:    null,
     created_at:    art.created_at||nowStr()
@@ -332,6 +333,7 @@ function render(){
   if(state.phase==='loading'){ app.innerHTML=loadingHTML(); return; }
   if(state.phase==='setup'){   app.innerHTML=setupHTML();   bindSetup(); return; }
   if(state.phase==='login'){   app.innerHTML=loginHTML();   bindLogin(); return; }
+  closeFlagPop();
   app.innerHTML=mainHTML();
   bindMain();
   if(state.modal?.type==='codici_art') updateCodModal(state.modal.id);
@@ -460,7 +462,8 @@ function mainHTML(){
   const isAdmin = state.utente?.ruolo==='admin';
   const TABS = isAdmin ? TABS_ADMIN : TABS_USER;
   const giacenze = calcGiacenze();
-  const alertList = Object.values(giacenze).filter(g=>scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min);
+  // Gli articoli con codice singolo non compaiono negli alert (riquadro, contatore, badge)
+  const alertList = Object.values(giacenze).filter(g=>scortaAttiva(g.art)&&!isSerial(g.art)&&g.pezzi<g.art.scorta_min);
   const mob = state.isMobile;
 
   const tabsHTML = TABS.map(t=>`
@@ -555,6 +558,7 @@ function renderGiacenze(giacenze,alertList){
     const sotto=scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min;
     if(filtro==='alert'&&!sotto) return false;
     if(filtro==='ok'&&sotto)     return false;
+    if(!filtroArtOk(g.art,'giac')) return false;
     return m;
   });
 
@@ -570,7 +574,7 @@ function renderGiacenze(giacenze,alertList){
     : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-            ${['Codice','Barcode','Descrizione','U.M.','Giacenza','Pz/Sc','Scorta min.','Stato',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
+            ${['','Codice','Barcode','Descrizione','U.M.','Giacenza','Pz/Sc','Scorta min.','Stato',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
           </tr></thead>
           <tbody>${rows.map(g=>desktopGiacenzaRow(g)).join('')}</tbody>
         </table>
@@ -585,6 +589,7 @@ function renderGiacenze(giacenze,alertList){
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           ${pillFiltro('tutti','Tutti')}${pillFiltro('alert','⚠ Alert')}${pillFiltro('ok','✓ OK')}
         </div>
+        ${filtriHTML('giac','updateGiacenzeTable();')}
         <button onclick="exportGiacenze()" style="${btnStyle('ghost',true)};margin-left:auto;">⬇ CSV</button>
       </div>
       <div id="giac-table-wrap">${rows.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun articolo trovato.</div>':rowsHTML}</div>
@@ -593,9 +598,9 @@ function renderGiacenze(giacenze,alertList){
 
 function mobileGiacenzaCard(g){
   const sotto=scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min;
-  return `<div style="background:#fff;border:1px solid ${sotto?'var(--rosso)':'var(--bordo)'};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
+  return `<div style="background:${flagBg(g.art)};border:1px solid ${sotto?'var(--rosso)':'var(--bordo)'};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-      <div>${pill(g.art.codice,'var(--grigio)')}<div style="font-weight:600;font-size:14px;margin-top:6px;">${g.art.nome}${artBadges(g.art)}</div></div>
+      <div><span style="display:inline-flex;align-items:center;gap:8px;">${flagDot(g.art)}${pill(g.art.codice,'var(--grigio)')}</span><div style="font-weight:600;font-size:14px;margin-top:6px;">${g.art.nome}${artBadges(g.art)}</div></div>
       <div style="text-align:right;"><div style="font-weight:700;font-size:22px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</div><div style="font-size:11px;color:var(--grigio);">${g.art.um}</div></div>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
@@ -612,7 +617,8 @@ function mobileGiacenzaCard(g){
 function desktopGiacenzaRow(g){
   const sotto=scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min;
   const pzSc=g.art.pezzi_scatola&&g.pezzi>0?`<span style="color:var(--grigio-chiaro);font-size:10px;margin-left:6px;">(${Math.floor(g.pezzi/g.art.pezzi_scatola)}sc+${g.pezzi%g.art.pezzi_scatola})</span>`:'';
-  return `<tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+  return `<tr ${rowAttrs(g.art)}>
+    ${flagCell(g.art)}
     <td style="padding:11px 14px;">${pill(g.art.codice,'var(--grigio)')}</td>
     <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${g.art.barcode||'—'}</td>
     <td style="padding:11px 14px;font-weight:600;">${g.art.nome}${artBadges(g.art)}</td>
@@ -638,6 +644,7 @@ function updateGiacenzeTable(){
     const sotto=scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min;
     if(filtro==='alert'&&!sotto) return false;
     if(filtro==='ok'&&sotto) return false;
+    if(!filtroArtOk(g.art,'giac')) return false;
     return m;
   });
   const wrap=document.getElementById('giac-table-wrap');
@@ -652,7 +659,7 @@ function updateGiacenzeTable(){
     wrap.innerHTML=`<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-          ${['Codice','Barcode','Descrizione','U.M.','Giacenza','Pz/Sc','Scorta min.','Stato',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
+          ${['','Codice','Barcode','Descrizione','U.M.','Giacenza','Pz/Sc','Scorta min.','Stato',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
         </tr></thead>
         <tbody>${rows.map(g=>desktopGiacenzaRow(g)).join('')}</tbody>
       </table>
@@ -683,7 +690,7 @@ function renderMovimenti(){
   const rows=state.movimenti.filter(m=>{
     const a=artMap[m.articolo_id];
     const match=!search||a?.codice?.toLowerCase().includes(search)||a?.nome?.toLowerCase().includes(search)||m.causale?.toLowerCase().includes(search)||m.nome_utente?.toLowerCase().includes(search);
-    return match&&(!filtroT||m.tipo===filtroT);
+    return match&&(!filtroT||m.tipo===filtroT)&&filtroArtOk(a,'mov');
   });
   const rowsHTML = state.isMobile
     ? rows.map(m=>{ const a=artMap[m.articolo_id]; return `
@@ -730,6 +737,7 @@ function renderMovimenti(){
           <option value="carico" ${filtroT==='carico'?'selected':''}>Solo carichi</option>
           <option value="scarico" ${filtroT==='scarico'?'selected':''}>Solo scarichi</option>
         </select>
+        ${filtriHTML('mov','updateMovimentiTable();')}
         <button onclick="exportMovimenti()" style="${btnStyle('ghost',true)};margin-left:auto;">⬇ CSV</button>
       </div>
       <div id="mov-table-wrap">      ${rows.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun movimento trovato.</div>':rowsHTML}</div>
@@ -743,7 +751,7 @@ function updateMovimentiTable(){
   const rows=state.movimenti.filter(m=>{
     const a=artMap[m.articolo_id];
     const match=!search||a?.codice?.toLowerCase().includes(search)||a?.nome?.toLowerCase().includes(search)||m.causale?.toLowerCase().includes(search)||m.nome_utente?.toLowerCase().includes(search);
-    return match&&(!filtroT||m.tipo===filtroT);
+    return match&&(!filtroT||m.tipo===filtroT)&&filtroArtOk(a,'mov');
   });
   const wrap=document.getElementById('mov-table-wrap');
   if(!wrap){ render(); return; }
@@ -810,16 +818,17 @@ function exportMovimenti(){
 function renderArticoli(giacenze){
   const raw = window._artSearch||'';
   const search = raw.length>=3 ? raw.toLowerCase() : '';
-  const articoliFiltrati = search
+  const articoliFiltrati = (search
     ? state.articoli.filter(a=>
         a.codice.toLowerCase().includes(search)||
         a.nome.toLowerCase().includes(search)||
         (a.barcode&&a.barcode.toLowerCase().includes(search))
       )
-    : state.articoli;
+    : state.articoli).filter(a=>filtroArtOk(a,'art'));
 
   const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=scortaAttiva(a)&&(g?.pezzi??0)<a.scorta_min; return `
-    <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+    <tr ${rowAttrs(a)}>
+      ${flagCell(a)}
       <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio);">${a.tipo_id?tipoNome(a.tipo_id):'<span style=\"color:var(--grigio-chiaro);">—</span>'}</td>
@@ -841,14 +850,15 @@ function renderArticoli(giacenze){
           value="${raw}"
           oninput="window._artSearch=this.value;updateArticoliTable();"
           style="${inpStyle()};max-width:420px;">
-        <button onclick="openModal({type:'nuovo_art'})" style="${btnStyle('primary',false)}">+ Nuovo articolo</button>
+        ${filtriHTML('art','updateArticoliTable();')}
+        <button onclick="openModal({type:'nuovo_art'})" style="${btnStyle('primary',false)};margin-left:auto;">+ Nuovo articolo</button>
       </div>
       <div id="art-table-wrap">
-      ${articoliFiltrati.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(search?'Nessun articolo trovato.':'Nessun articolo. Aggiungine uno per iniziare.')+'</div>':`
+      ${articoliFiltrati.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(search||filtriAttivi('art')?'Nessun articolo trovato.':'Nessun articolo. Aggiungine uno per iniziare.')+'</div>':`
         <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
           <table style="width:100%;border-collapse:collapse;font-size:13px;">
             <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-              ${['Codice','Barcode','Tipo','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+              ${['','Codice','Barcode','Tipo','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
             </tr></thead>
             <tbody>${rows}</tbody>
           </table>
@@ -864,19 +874,20 @@ function updateArticoliTable(){
   const giacenze = calcGiacenze();
   const raw = window._artSearch||'';
   const search = raw.length>=3 ? raw.toLowerCase() : '';
-  const articoliFiltrati = search
+  const articoliFiltrati = (search
     ? state.articoli.filter(a=>
         a.codice.toLowerCase().includes(search)||
         a.nome.toLowerCase().includes(search)||
         (a.barcode&&a.barcode.toLowerCase().includes(search))
       )
-    : state.articoli;
+    : state.articoli).filter(a=>filtroArtOk(a,'art'));
   if(articoliFiltrati.length===0){
-    wrap.innerHTML='<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(search?'Nessun articolo trovato.':'Nessun articolo.')+'</div>';
+    wrap.innerHTML='<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(search||filtriAttivi('art')?'Nessun articolo trovato.':'Nessun articolo.')+'</div>';
     return;
   }
   const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=scortaAttiva(a)&&(g?.pezzi??0)<a.scorta_min; return `
-    <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
+    <tr ${rowAttrs(a)}>
+      ${flagCell(a)}
       <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
       <td style="padding:11px 14px;font-size:11px;color:var(--grigio);">${a.tipo_id?tipoNome(a.tipo_id):'<span style=\"color:var(--grigio-chiaro);">—</span>'}</td>
@@ -894,7 +905,7 @@ function updateArticoliTable(){
   wrap.innerHTML=`<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-        ${['Codice','Barcode','Tipo','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+        ${['','Codice','Barcode','Tipo','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
@@ -926,11 +937,15 @@ function renderScadenze(){
 
   // Mantieni solo lotti con giacenza positiva, ordina per data scadenza
   const righe=Object.values(lotti)
-    .filter(l=>l.pezzi>0)
+    .filter(l=>l.pezzi>0&&filtroArtOk(artMap[l.artId],'scad'))
     .map(l=>({...l,art:artMap[l.artId]}))
     .sort((a,b)=>a.scadenza.localeCompare(b.scadenza));
 
-  if(!righe.length) return '<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessuna scadenza con giacenza disponibile.</div>';
+  const barScad=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
+      ${filtriHTML('scad','render();')}
+      <span style="font-size:11px;color:var(--grigio);margin-left:auto;">${righe.length} lotti disponibili · ordinati per data di scadenza</span>
+    </div>`;
+  if(!righe.length) return barScad+'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(filtriAttivi('scad')?'Nessuna scadenza per i filtri selezionati.':'Nessuna scadenza con giacenza disponibile.')+'</div>';
 
   // Raggruppa per data scadenza
   const gruppi={};
@@ -964,7 +979,7 @@ function renderScadenze(){
   }).join('');
 
   return `<div>
-    <div style="font-size:11px;color:var(--grigio);margin-bottom:16px;">${righe.length} lotti disponibili · ordinati per data di scadenza</div>
+    ${barScad}
     <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead>
@@ -1594,11 +1609,140 @@ async function submitMovimento(tipo){
 }
 
 // ════════════════════════════════════════════════════════════════
+// FLAG COLORE ARTICOLI + FILTRI COLORE / TIPO
+// ════════════════════════════════════════════════════════════════
+const FLAGS = {
+  blu:    {label:'Blu',    dot:'#5B8DB8', bg:'#E8F0F8', hover:'#DCE8F4'},
+  giallo: {label:'Giallo', dot:'#E3B23C', bg:'#FFF6D9', hover:'#FCEDBF'},
+};
+function flagBg(a){ return FLAGS[a?.flag]?.bg || '#fff'; }
+
+// Attributi della riga tabella: sfondo del flag e hover coerente
+function rowAttrs(a){
+  const f=FLAGS[a?.flag];
+  const bg=f?f.bg:'transparent', hv=f?f.hover:'var(--verde-pale)';
+  return `onmouseover="this.style.background='${hv}'" onmouseout="this.style.background='${bg}'" style="border-bottom:1px solid var(--bordo);background:${bg};"`;
+}
+
+// Pallino cliccabile: tratteggiato se vuoto, pieno col colore se flaggato
+function flagDot(a){
+  const f=FLAGS[a.flag];
+  return `<button type="button" onclick="event.stopPropagation();openFlagPop(this,'${a.id}')"
+    title="${f?'Colore: '+f.label+' (clicca per cambiare o togliere)':'Aggiungi un colore alla riga'}"
+    style="width:18px;height:18px;border-radius:50%;cursor:pointer;padding:0;flex-shrink:0;vertical-align:middle;
+    border:${f?'2px solid '+f.dot:'1.5px dashed var(--grigio-chiaro)'};background:${f?f.dot:'#fff'};"></button>`;
+}
+function flagCell(a){ return `<td style="padding:11px 4px 11px 14px;width:22px;">${flagDot(a)}</td>`; }
+
+function openFlagPop(btn,id){
+  closeFlagPop();
+  const a=state.articoli.find(x=>x.id===id); if(!a) return;
+  const opt=(k,label,dot)=>{
+    const on=(a.flag||null)===k;
+    return `<button type="button" onclick="setFlag('${id}',${k?`'${k}'`:'null'})"
+      style="display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:none;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:${on?700:500};color:var(--testo);text-align:left;background:${on?'var(--grigio-sfondo)':'transparent'};"
+      onmouseover="this.style.background='var(--grigio-sfondo)'" onmouseout="this.style.background='${on?'var(--grigio-sfondo)':'transparent'}'">
+      <span style="width:16px;height:16px;border-radius:50%;flex-shrink:0;${dot}"></span>
+      <span style="flex:1;">${label}</span>${on?'<span style="color:var(--verde);font-weight:700;">✓</span>':''}
+    </button>`;
+  };
+  const pop=document.createElement('div');
+  pop.id='flag-pop';
+  pop.innerHTML=`<div style="font-size:10px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:4px 10px 6px;">Colore riga</div>
+    ${opt('blu','Blu',`background:${FLAGS.blu.dot};`)}
+    ${opt('giallo','Giallo',`background:${FLAGS.giallo.dot};`)}
+    <div style="height:1px;background:var(--bordo);margin:4px 0;"></div>
+    ${opt(null,'Nessun colore','border:1.5px dashed var(--grigio-chiaro);background:#fff;')}`;
+  const r=btn.getBoundingClientRect();
+  const w=180;
+  const left=Math.min(r.left+window.scrollX, window.scrollX+document.documentElement.clientWidth-w-8);
+  pop.style.cssText=`position:absolute;top:${r.bottom+window.scrollY+6}px;left:${Math.max(8,left)}px;width:${w}px;background:#fff;border:1px solid var(--bordo);border-radius:10px;box-shadow:0 10px 30px #00000024;padding:6px;z-index:1500;animation:slideUp .15s ease;`;
+  document.body.appendChild(pop);
+  setTimeout(()=>{
+    document.addEventListener('mousedown',_flagOutside);
+    document.addEventListener('keydown',_flagEsc);
+  },0);
+}
+function _flagOutside(e){ const p=document.getElementById('flag-pop'); if(p&&!p.contains(e.target)) closeFlagPop(); }
+function _flagEsc(e){ if(e.key==='Escape') closeFlagPop(); }
+function closeFlagPop(){
+  document.getElementById('flag-pop')?.remove();
+  document.removeEventListener('mousedown',_flagOutside);
+  document.removeEventListener('keydown',_flagEsc);
+}
+function refreshArtViews(){
+  if(state.tab==='Giacenze') updateGiacenzeTable();
+  else if(state.tab==='Articoli') updateArticoliTable();
+  else render();
+}
+async function setFlag(id,flag){
+  closeFlagPop();
+  const a=state.articoli.find(x=>x.id===id); if(!a) return;
+  const prev=a.flag||null;
+  if(prev===flag) return;
+  a.flag=flag; refreshArtViews();            // aggiornamento immediato
+  try{ await db.update('magazzino_articoli',{flag},`id=eq.${id}`); }
+  catch(e){ a.flag=prev; refreshArtViews(); showToast('Impossibile salvare il colore: '+e.message,'error'); }
+}
+
+// Selettore colore nella modale articolo
+function flagPickerHTML(cur){
+  const b=(k,label,dot)=>{ const on=(cur||'')===k; return `<button type="button" data-flag="${k}" onclick="pickArtFlag('${k}')"
+    style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:9px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600;
+    border:1.5px solid ${on?'var(--verde)':'var(--bordo)'};background:${on?'var(--verde-pale)':'#fff'};color:var(--grigio-scuro);">
+    <span style="width:14px;height:14px;border-radius:50%;${dot}"></span>${label}</button>`; };
+  return `<div style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Colore riga
+    <input type="hidden" id="art-flag" value="${cur||''}">
+    <div id="art-flag-btns" style="display:flex;gap:6px;">
+      ${b('','Nessuno','border:1.5px dashed var(--grigio-chiaro);background:#fff;')}
+      ${b('blu','Blu',`background:${FLAGS.blu.dot};`)}
+      ${b('giallo','Giallo',`background:${FLAGS.giallo.dot};`)}
+    </div></div>`;
+}
+function pickArtFlag(k){
+  document.getElementById('art-flag').value=k;
+  document.querySelectorAll('#art-flag-btns button').forEach(bt=>{
+    const on=bt.dataset.flag===k;
+    bt.style.borderColor=on?'var(--verde)':'var(--bordo)';
+    bt.style.background=on?'var(--verde-pale)':'#fff';
+  });
+}
+
+// ── Filtri colore e tipo (per pagina: giac, art, mov, scad) ──
+function filtroArtOk(a,key){
+  const f=window['_'+key+'Flag']||'', t=window['_'+key+'Tipo']||'';
+  if(!a) return !f&&!t;
+  if(f==='nessuno'&&a.flag) return false;
+  if(f&&f!=='nessuno'&&a.flag!==f) return false;
+  if(t==='_none'&&a.tipo_id) return false;
+  if(t&&t!=='_none'&&a.tipo_id!==t) return false;
+  return true;
+}
+function filtriAttivi(key){ return !!(window['_'+key+'Flag']||window['_'+key+'Tipo']); }
+function filtriHTML(key,onchange){
+  const f=window['_'+key+'Flag']||'', t=window['_'+key+'Tipo']||'';
+  const st=on=>`${inpStyle()};width:auto;min-width:140px;max-width:200px;padding:9px 10px;font-size:13px;${on?'border-color:var(--verde);background:var(--verde-pale);':''}`;
+  return `<select title="Filtra per colore" onchange="window._${key}Flag=this.value;filtroStyle(this);${onchange}" style="${st(!!f)}">
+      <option value="" ${!f?'selected':''}>Tutti i colori</option>
+      <option value="blu" ${f==='blu'?'selected':''}>🔵 Blu</option>
+      <option value="giallo" ${f==='giallo'?'selected':''}>🟡 Giallo</option>
+      <option value="nessuno" ${f==='nessuno'?'selected':''}>Senza colore</option>
+    </select>
+    <select title="Filtra per tipo prodotto" onchange="window._${key}Tipo=this.value;filtroStyle(this);${onchange}" style="${st(!!t)}">
+      <option value="" ${!t?'selected':''}>Tutti i tipi</option>
+      ${state.tipi.map(x=>`<option value="${x.id}" ${t===x.id?'selected':''}>${escHtml(x.nome)}</option>`).join('')}
+      <option value="_none" ${t==='_none'?'selected':''}>Senza tipo</option>
+    </select>`;
+}
+
+function filtroStyle(sel){ const on=!!sel.value; sel.style.borderColor=on?'var(--verde)':'var(--bordo)'; sel.style.background=on?'var(--verde-pale)':'#fff'; }
+
+// ════════════════════════════════════════════════════════════════
 // CODICI SINGOLI PRODOTTI
 // ════════════════════════════════════════════════════════════════
 // Un articolo usa i codici singoli se il suo tipo ha il flag attivo
-// Alert sotto scorta: solo se la scorta minima è impostata e l'articolo NON usa i codici singoli
-function scortaAttiva(art){ return !!art && art.scorta_min!=null && !isSerial(art); }
+// Scorta minima impostata (vale per tutti gli articoli)
+function scortaAttiva(art){ return !!art && art.scorta_min!=null; }
 function isSerial(art){
   if(!art||!art.tipo_id) return false;
   return !!state.tipi.find(t=>t.id===art.tipo_id)?.codice_singolo;
@@ -1973,6 +2117,7 @@ function articoloModal(art){
         <input type="checkbox" id="art-frigo" ${art?.frigo?'checked':''} style="width:15px;height:15px;cursor:pointer;accent-color:var(--verde);">
         ❄ Conservazione in frigorifero
       </label>
+      ${flagPickerHTML((state.articoli.find(x=>x.id===art?.id)||art)?.flag)}
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Note
         <textarea id="art-note" rows="4" placeholder="Note libere sull'articolo…" style="${inpStyle()};resize:vertical;min-height:80px;line-height:1.4;">${escHtml((state.articoli.find(x=>x.id===art?.id)||art)?.note||'')}</textarea>
       </label>
@@ -2009,6 +2154,7 @@ async function submitArticolo(existingId){
     tipo_id:document.getElementById('art-tipo').value||null,
     frigo:document.getElementById('art-frigo').checked,
     note:document.getElementById('art-note').value.trim()||null,
+    flag:document.getElementById('art-flag').value||null,
     pezzi_scatola: pzscVal!=='' ? parseInt(pzscVal) : null,
     scorta_min:    scminVal!=='' ? parseInt(scminVal) : null,
     created_at:nowStr()
