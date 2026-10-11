@@ -444,12 +444,12 @@ function loginHTML(){ return `
       <div style="margin-top:12px;margin-bottom:16px">
         <label style="display:block;font-size:12px;font-weight:600;color:#4A4C4D;letter-spacing:.5px;margin-bottom:6px">E-Mail</label>
         <input id="login-user" type="email" placeholder="nome@medicalgroup.it" autocomplete="username"
-          style="width:100%;padding:11px 14px;border:1px solid #E2E6DF;border-radius:6px;background:#EEF5E3;font-family:'Raleway',sans-serif;font-size:14px;color:#2A2C2D;outline:none;transition:border-color .2s"/>
+          style="width:100%;padding:10px 10px;border:1px solid #E2E6DF;border-radius:6px;background:#EEF5E3;font-family:'Raleway',sans-serif;font-size:14px;color:#2A2C2D;outline:none;transition:border-color .2s"/>
       </div>
       <div style="margin-bottom:20px">
         <label style="display:block;font-size:12px;font-weight:600;color:#4A4C4D;letter-spacing:.5px;margin-bottom:6px">Password</label>
         <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password"
-          style="width:100%;padding:11px 14px;border:1px solid #E2E6DF;border-radius:6px;background:#EEF5E3;font-family:'Raleway',sans-serif;font-size:14px;color:#2A2C2D;outline:none;transition:border-color .2s"/>
+          style="width:100%;padding:10px 10px;border:1px solid #E2E6DF;border-radius:6px;background:#EEF5E3;font-family:'Raleway',sans-serif;font-size:14px;color:#2A2C2D;outline:none;transition:border-color .2s"/>
       </div>
       <button id="login-btn" style="width:100%;padding:12px;background:#9DBF60;color:#fff;border:none;border-radius:6px;font-family:'Raleway',sans-serif;font-size:14px;font-weight:700;cursor:pointer;transition:opacity .2s">Accedi</button>
       <div style="margin-top:14px;font-size:10px;color:#aaaaaa;text-align:center;letter-spacing:.5px">${_appVersion?"build "+_appVersion:""}</div>
@@ -541,7 +541,7 @@ function mainHTML(){
     <div style="min-height:100vh;background:var(--grigio-sfondo);">
       <!-- HEADER -->
       <div style="background:#fff;border-bottom:1px solid var(--bordo);box-shadow:0 1px 6px #0000000a;position:sticky;top:0;z-index:100;">
-        <div style="max-width:1140px;margin:0 auto;padding:0 16px;">
+        <div style="max-width:1440px;margin:0 auto;padding:0 16px;">
           <div style="display:flex;align-items:center;justify-content:space-between;height:${mob?54:64}px;">
             ${logoHTML(mob)}
             <div style="display:flex;align-items:center;gap:8px;">
@@ -556,7 +556,7 @@ function mainHTML(){
         </div>
       </div>
       <!-- CONTENT -->
-      <div style="max-width:1140px;margin:0 auto;padding:${mob?'16px 12px':'28px 24px'};padding-bottom:${mob?100:28}px;">
+      <div style="max-width:1440px;margin:0 auto;padding:${mob?'16px 12px':'28px 24px'};padding-bottom:${mob?100:28}px;">
         <div style="display:flex;gap:12px;margin-bottom:20px;overflow-x:auto;scrollbar-width:none;">${stats}</div>
         ${alertBanner}
         ${content}
@@ -600,7 +600,7 @@ function renderGiacenze(giacenze,alertList){
     : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-            ${['','Codice','Barcode','Descrizione','U.M.','Giacenza','Pz/Sc','Scorta min.','Stato',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
+            ${['','Codice / Barcode','Descrizione','U.M.','Giacenza','Pz/Sc','Scorta min.','Stato',''].map(h=>`<th style="text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
           </tr></thead>
           <tbody>${rows.map(g=>desktopGiacenzaRow(g)).join('')}</tbody>
         </table>
@@ -645,15 +645,14 @@ function desktopGiacenzaRow(g){
   const pzSc=g.art.pezzi_scatola&&g.pezzi>0?`<span style="color:var(--grigio-chiaro);font-size:10px;margin-left:6px;">(${Math.floor(g.pezzi/g.art.pezzi_scatola)}sc+${g.pezzi%g.art.pezzi_scatola})</span>`:'';
   return `<tr ${rowAttrs(g.art)}>
     ${flagCell(g.art)}
-    <td style="padding:11px 14px;">${pill(g.art.codice,'var(--grigio)')}</td>
-    <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${g.art.barcode||'—'}</td>
-    <td style="padding:11px 14px;font-weight:600;">${g.art.nome}${artBadges(g.art)}</td>
-    <td style="padding:11px 14px;color:var(--grigio);">${g.art.um}</td>
-    <td style="padding:11px 14px;"><span style="font-weight:700;font-size:15px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</span>${pzSc}</td>
-    <td style="padding:11px 14px;color:var(--grigio);">${g.art.pezzi_scatola||'—'}</td>
-    <td style="padding:11px 14px;color:var(--grigio);">${scortaAttiva(g.art)?fmt(g.art.scorta_min):'—'}</td>
-    <td style="padding:11px 14px;">${!scortaAttiva(g.art)?'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>':sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')}</td>
-    <td style="padding:11px 14px;"><div style="display:flex;gap:6px;justify-content:flex-end;">
+    <td style="padding:10px 10px;white-space:nowrap;">${pill(g.art.codice,'var(--grigio)')}${g.art.barcode?`<div style="font-size:10px;color:var(--grigio-chiaro);font-family:monospace;margin-top:5px;padding-left:9px;">${g.art.barcode}</div>`:''}</td>
+    <td style="padding:10px 10px;font-weight:600;">${g.art.nome}${artBadges(g.art)}</td>
+    <td style="padding:10px 10px;color:var(--grigio);">${g.art.um}</td>
+    <td style="padding:10px 10px;"><span style="font-weight:700;font-size:15px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</span>${pzSc}</td>
+    <td style="padding:10px 10px;color:var(--grigio);">${g.art.pezzi_scatola||'—'}</td>
+    <td style="padding:10px 10px;color:var(--grigio);">${scortaAttiva(g.art)?fmt(g.art.scorta_min):'—'}</td>
+    <td style="padding:10px 10px;">${!scortaAttiva(g.art)?'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>':sotto?pill('⚠ Sotto scorta','var(--rosso)'):pill('✓ OK','var(--verde)')}</td>
+    <td style="padding:10px 10px;"><div style="display:flex;gap:6px;justify-content:flex-end;white-space:nowrap;">
       ${codiciBtn(g.art)}${noteBtn(g.art)}
       <button onclick="openModal({type:'carico',preselectId:'${g.art.id}'})" style="${btnStyle('outline',true)}">↑</button>
       <button onclick="openModal({type:'scarico',preselectId:'${g.art.id}'})" style="${btnStyle('ghost',true)}">↓</button>
@@ -685,7 +684,7 @@ function updateGiacenzeTable(){
     wrap.innerHTML=`<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-          ${['','Codice','Barcode','Descrizione','U.M.','Giacenza','Pz/Sc','Scorta min.','Stato',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
+          ${['','Codice / Barcode','Descrizione','U.M.','Giacenza','Pz/Sc','Scorta min.','Stato',''].map(h=>`<th style="text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
         </tr></thead>
         <tbody>${rows.map(g=>desktopGiacenzaRow(g)).join('')}</tbody>
       </table>
@@ -739,7 +738,7 @@ function renderMovimenti(){
     : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-            ${['Data/Ora','Tipo','Utente','Articolo','Quantità','Causale','Scadenza','Note'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
+            ${['Data/Ora','Tipo','Utente','Articolo','Quantità','Causale','Scadenza','Note'].map(h=>`<th style="text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
           </tr></thead>
           <tbody>${rows.map(m=>{ const a=artMap[m.articolo_id]; return `
             <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
@@ -808,7 +807,7 @@ function updateMovimentiTable(){
     wrap.innerHTML=`<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-          ${['Data/Ora','Tipo','Utente','Articolo','Quantità','Causale','Scadenza','Note'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
+          ${['Data/Ora','Tipo','Utente','Articolo','Quantità','Causale','Scadenza','Note'].map(h=>`<th style="text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;">${h}</th>`).join('')}
         </tr></thead>
         <tbody>${rows.map(m=>{ const a=artMap[m.articolo_id]; const fmtSc=m.scadenza?m.scadenza.split("-").reverse().join("/"):""; return `
           <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
@@ -923,7 +922,7 @@ function renderScadenze(){
   };
 
   // Unica tabella con colonna "Scadenza" — colonne perfettamente allineate tra i gruppi
-  const thStyle = 'text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;';
+  const thStyle = 'text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;';
   const allRows = righe.map(l => {
     const s = statoSc(l.scadenza);
     return `
@@ -967,11 +966,11 @@ function renderTipi(){
     const used = state.articoli.filter(a=>a.tipo_id===t.id).length;
     return `
       <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
-        <td style="padding:11px 14px;font-weight:600;">${t.nome}</td>
-        <td style="padding:11px 14px;">${t.codice_singolo?pill('✓ Attivo','var(--verde)'):'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>'}</td>
-        <td style="padding:11px 14px;"><div style="display:flex;gap:4px;flex-wrap:wrap;">${tipoMags(t).map(id=>magPill(id)).join('')}</div></td>
-        <td style="padding:11px 14px;color:var(--grigio);font-size:12px;">${used} articol${used===1?'o':'i'}</td>
-        <td style="padding:11px 14px;">
+        <td style="padding:10px 10px;font-weight:600;">${t.nome}</td>
+        <td style="padding:10px 10px;">${t.codice_singolo?pill('✓ Attivo','var(--verde)'):'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>'}</td>
+        <td style="padding:10px 10px;"><div style="display:flex;gap:4px;flex-wrap:wrap;">${tipoMags(t).map(id=>magPill(id)).join('')}</div></td>
+        <td style="padding:10px 10px;color:var(--grigio);font-size:12px;">${used} articol${used===1?'o':'i'}</td>
+        <td style="padding:10px 10px;">
           <div style="display:flex;gap:6px;">
             <button onclick="openModal({type:'edit_tipo',tipo:${JSON.stringify(t).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎ Modifica</button>
             <button onclick="confirmDeleteTipo('${t.id}',${used})" style="${btnStyle('danger',true)}">✕</button>
@@ -990,7 +989,7 @@ function renderTipi(){
         : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
             <table style="width:100%;border-collapse:collapse;font-size:13px;">
               <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-                ${['Tipo prodotto','Codice singolo','Magazzini','Utilizzo',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+                ${['Tipo prodotto','Codice singolo','Magazzini','Utilizzo',''].map(h=>`<th style="text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
               </tr></thead>
               <tbody>${rows}</tbody>
             </table>
@@ -1011,13 +1010,13 @@ function confirmDeleteTipo(id, used){
 function renderUtenti(){
   const rows=state.utenti.map(u=>`
     <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
-      <td style="padding:11px 14px;font-weight:600;">${u.nome_completo}</td>
-      <td style="padding:11px 14px;color:var(--grigio);font-family:monospace;font-size:12px;">@${u.username}</td>
-      <td style="padding:11px 14px;">${pill(u.ruolo,u.ruolo==='admin'?'var(--verde)':'var(--grigio)')}</td>
-      <td style="padding:11px 14px;">${userMagsCell(u)}</td>
-      <td style="padding:11px 14px;">${pill(u.attivo?'Attivo':'Disabilitato',u.attivo?'var(--verde)':'var(--rosso)')}</td>
-      <td style="padding:11px 14px;color:var(--grigio);font-size:11px;">${u.created_at}</td>
-      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
+      <td style="padding:10px 10px;font-weight:600;">${u.nome_completo}</td>
+      <td style="padding:10px 10px;color:var(--grigio);font-family:monospace;font-size:12px;">@${u.username}</td>
+      <td style="padding:10px 10px;">${pill(u.ruolo,u.ruolo==='admin'?'var(--verde)':'var(--grigio)')}</td>
+      <td style="padding:10px 10px;">${userMagsCell(u)}</td>
+      <td style="padding:10px 10px;">${pill(u.attivo?'Attivo':'Disabilitato',u.attivo?'var(--verde)':'var(--rosso)')}</td>
+      <td style="padding:10px 10px;color:var(--grigio);font-size:11px;">${u.created_at}</td>
+      <td style="padding:10px 10px;"><div style="display:flex;gap:6px;">
         <button onclick="openModal({type:'reset_pass',userId:'${u.id}',userName:${JSON.stringify(u.nome_completo)}})" style="${btnStyle('ghost',true)}">Reset pw</button>
         ${u.id!==state.utente?.id?`<button onclick="toggleUtente('${u.id}',${u.attivo})" style="${btnStyle(u.attivo?'danger':'outline',true)}">${u.attivo?'Disabilita':'Riabilita'}</button>`:''}
       </div></td>
@@ -1030,7 +1029,7 @@ function renderUtenti(){
       <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-            ${['Nome','Username','Ruolo','Magazzini','Stato','Creato il','Azioni'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+            ${['Nome','Username','Ruolo','Magazzini','Stato','Creato il','Azioni'].map(h=>`<th style="text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -1083,7 +1082,7 @@ function renderLog(){
         <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
           <table style="width:100%;border-collapse:collapse;font-size:13px;">
             <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-              ${['Data/Ora','Utente','Tipo','Dettaglio'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+              ${['Data/Ora','Utente','Tipo','Dettaglio'].map(h=>`<th style="text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
             </tr></thead>
             <tbody>${rows.map(e=>`
               <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
@@ -1145,7 +1144,7 @@ function updateLogTable(){
     <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-          ${['Data/Ora','Utente','Tipo','Dettaglio'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+          ${['Data/Ora','Utente','Tipo','Dettaglio'].map(h=>`<th style="text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
         </tr></thead>
         <tbody>${rows.map(e=>`
           <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
@@ -1685,9 +1684,9 @@ function articoliFiltrati(){
 }
 function articoliTableHTML(list){
   const G=Object.fromEntries(MAGAZZINI.map(m=>[m.id,calcGiacenze(m.id)]));
-  const th='text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;';
-  const thN='text-align:right;padding:8px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.6px;white-space:nowrap;';
-  const tdN='padding:11px 10px;text-align:right;white-space:nowrap;';
+  const th='text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;';
+  const thN='text-align:right;padding:8px 8px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.6px;white-space:nowrap;';
+  const tdN='padding:10px 8px;text-align:right;white-space:nowrap;';
   const rows=list.map(a=>{
     const cells=MAGAZZINI.map((m,i)=>{
       const sep=i===0?'border-left:2px solid var(--bordo);':'border-left:1px solid var(--bordo);';
@@ -1701,12 +1700,11 @@ function articoliTableHTML(list){
     }).join('');
     return `<tr ${rowAttrs(a)}>
       ${flagCell(a)}
-      <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
-      <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
-      <td style="padding:11px 14px;font-weight:600;">${a.nome}${artBadges(a)}</td>
-      <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
+      <td style="padding:10px 10px;white-space:nowrap;">${pill(a.codice,'var(--grigio)')}${a.barcode?`<div style="font-size:10px;color:var(--grigio-chiaro);font-family:monospace;margin-top:5px;padding-left:9px;">${a.barcode}</div>`:''}</td>
+      <td style="padding:10px 10px;font-weight:600;">${a.nome}${artBadges(a)}</td>
+      <td style="padding:10px 10px;color:var(--grigio);">${a.um}</td>
       ${cells}
-      <td style="padding:11px 14px;border-left:2px solid var(--bordo);"><div style="display:flex;gap:6px;justify-content:flex-end;">
+      <td style="padding:10px 10px;border-left:2px solid var(--bordo);"><div style="display:flex;gap:6px;justify-content:flex-end;white-space:nowrap;">
         ${codiciBtn(a,null)}${noteBtn(a)}
         <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
         <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
@@ -1718,7 +1716,7 @@ function articoliTableHTML(list){
       <thead>
         <tr style="background:var(--grigio-sfondo);">
           <th rowspan="2" style="${th}border-bottom:1px solid var(--bordo);"></th>
-          ${['Codice','Barcode','Descrizione','U.M.'].map(h=>`<th rowspan="2" style="${th}border-bottom:1px solid var(--bordo);">${h}</th>`).join('')}
+          ${['Codice / Barcode','Descrizione','U.M.'].map(h=>`<th rowspan="2" style="${th}border-bottom:1px solid var(--bordo);">${h}</th>`).join('')}
           ${MAGAZZINI.map((m,i)=>`<th colspan="3" style="text-align:center;padding:8px 10px 4px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:${m.color};filter:brightness(.85);border-top:3px solid ${m.color};${i===0?'border-left:2px solid var(--bordo);':'border-left:1px solid var(--bordo);'}">${m.nome}</th>`).join('')}
           <th rowspan="2" style="${th}border-bottom:1px solid var(--bordo);border-left:2px solid var(--bordo);"></th>
         </tr>
@@ -2324,10 +2322,10 @@ function noteArtModal(id){
 }
 
 function artBadges(art){
-  let b='';
-  if(art.frigo) b+=`<span style="background:var(--verde);color:#fff;border-radius:4px;font-size:9px;font-weight:700;padding:2px 6px;letter-spacing:.8px;text-transform:uppercase;margin-left:6px;vertical-align:middle;">❄ Frigo</span>`;
-  if(art.tipo_id){const tn=tipoNome(art.tipo_id); b+=`<span style="background:var(--grigio-sfondo);color:var(--grigio);border:1px solid var(--bordo);border-radius:4px;font-size:9px;font-weight:700;padding:2px 6px;letter-spacing:.5px;margin-left:4px;vertical-align:middle;">${tn}</span>`;}
-  return b;
+  const b=[];
+  if(art.frigo) b.push(`<span style="background:var(--verde);color:#fff;border-radius:4px;font-size:9px;font-weight:700;padding:2px 6px;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;">❄ Frigo</span>`);
+  if(art.tipo_id) b.push(`<span style="background:var(--grigio-sfondo);color:var(--grigio);border:1px solid var(--bordo);border-radius:4px;font-size:9px;font-weight:700;padding:2px 6px;letter-spacing:.5px;white-space:nowrap;">${escHtml(tipoNome(art.tipo_id))}</span>`);
+  return b.length?`<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">${b.join('')}</div>`:'';
 }
 
 // Tipo prodotto modal
