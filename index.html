@@ -70,6 +70,13 @@ const db = {
     if(!r.ok) throw new Error(await r.text());
     return r.json();
   },
+  async upsert(table, data, onConflict){
+    const r = await fetch(`${SUPA_URL}/rest/v1/${table}?on_conflict=${onConflict}`, {
+      method:'POST', headers:{...headers,'Prefer':'resolution=merge-duplicates,return=representation'}, body: JSON.stringify(data)
+    });
+    if(!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
   async update(table, data, filter){
     const r = await fetch(`${SUPA_URL}/rest/v1/${table}?${filter}`, {
       method:'PATCH', headers, body: JSON.stringify(data)
@@ -124,6 +131,9 @@ let state = {
   movimenti: [],
   tipi: [],
   codici: [],
+  artMag: [],
+  artMagIdx: {},
+  mag: 'chirurgia',
   logEntries: [],
   utenti: [],
   tab: 'Giacenze',
@@ -136,11 +146,11 @@ let state = {
 window.addEventListener('resize', ()=>{ state.isMobile = window.innerWidth < 700; render(); });
 
 // ── Giacenze calcolate ────────────────────────────────────────
-function calcGiacenze(){
+function calcGiacenze(mag=state.mag){
   const g = {};
-  state.articoli.forEach(a=>{ g[a.id]={art:a, pezzi:0}; });
+  state.articoli.forEach(a=>{ if(isEnabled(a.id,mag)) g[a.id]={art:artById(a.id,mag), pezzi:0}; });
   state.movimenti.forEach(m=>{
-    if(!g[m.articolo_id]) return;
+    if(movMag(m)!==mag||!g[m.articolo_id]) return;
     g[m.articolo_id].pezzi += m.tipo==='carico' ? m.quantita : -m.quantita;
   });
   return g;
@@ -161,6 +171,13 @@ async function loadAll(){
   const codici = await db.selectAll('magazzino_articoli_codici','order=codice.asc,id.asc').catch(()=>[]);
   // La data è salvata come testo (gg/mm/aaaa, hh:mm:ss): ordino i movimenti dal più recente
   movimenti.sort((a,b)=>parseDataIt(b.data)-parseDataIt(a.data));
+  // Abilitazione articoli per magazzino (prima della migrazione: tutto in Chirurgia)
+  const artMag = await db.selectAll('magazzino_articoli_magazzini','order=articolo_id.asc,magazzino.asc')
+    .catch(()=>articoli.map(a=>({articolo_id:a.id,magazzino:'chirurgia',pezzi_scatola:a.pezzi_scatola,scorta_min:a.scorta_min})));
+  state.artMag     = artMag;
+  buildArtMagIdx();
+  if(state.utente){ const me=utenti.find(u=>u.id===state.utente.id); if(me) state.utente={...state.utente,ruolo:me.ruolo,magazzini:me.magazzini}; }
+  ensureMag();
   state.codici     = codici;
   state.articoli   = articoli;
   state.movimenti  = movimenti;
@@ -201,7 +218,7 @@ async function doLogin(username,pass){
   const hash = await sha256(pass);
   if(hash!==u.password_hash) throw new Error('Password errata.');
   await db.insert('magazzino_log_accessi',{id:uid(),tipo:'login',utente:u.username,nome_completo:u.nome_completo,data:nowStr()});
-  state.utente=u; state.phase='app';
+  state.utente=u; state.phase='app'; state.mag=userMags(u)[0];
   await loadAll();
 }
 
@@ -215,11 +232,11 @@ async function doCarico(m){
   const mov = {id:uid(),articolo_id:m.articoloId,tipo:'carico',quantita:m.quantita,
     causale:m.causale,scadenza:m.scadenza||null,note:m.note||null,
     is_scatola:m.isScatola||false,n_scatole:m.nScatole||null,
-    utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr()};
+    utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr(),magazzino:curMag()};
   await db.insert('magazzino_movimenti',mov);
   await db.insert('magazzino_log_accessi',{id:uid(),tipo:'carico',utente:state.utente.username,
     nome_completo:state.utente.nome_completo,articolo_id:m.articoloId,
-    quantita:m.quantita,causale:m.causale,data:nowStr()});
+    quantita:m.quantita,causale:m.causale,data:nowStr(),magazzino:curMag()});
   await loadAll();
 }
 
@@ -227,11 +244,11 @@ async function doScarico(m){
   const mov = {id:uid(),articolo_id:m.articoloId,tipo:'scarico',quantita:m.quantita,
     causale:m.causale,scadenza:m.scadenza||null,note:m.note||null,
     is_scatola:m.isScatola||false,n_scatole:m.nScatole||null,
-    utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr()};
+    utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr(),magazzino:curMag()};
   await db.insert('magazzino_movimenti',mov);
   await db.insert('magazzino_log_accessi',{id:uid(),tipo:'scarico',utente:state.utente.username,
     nome_completo:state.utente.nome_completo,articolo_id:m.articoloId,
-    quantita:m.quantita,causale:m.causale,data:nowStr()});
+    quantita:m.quantita,causale:m.causale,data:nowStr(),magazzino:curMag()});
   await loadAll();
 }
 
@@ -247,14 +264,15 @@ async function saveArticolo(art, isNew){
     frigo:         art.frigo===true||art.frigo==='true'||false,
     note:          (art.note&&String(art.note).trim())||null,
     flag:          FLAGS[art.flag]?art.flag:null,
-    pezzi_scatola: toInt(art.pezzi_scatola),
-    scorta_min:    null,
     created_at:    art.created_at||nowStr()
   };
-  const sm = parseInt(art.scorta_min);
-  row.scorta_min = (!isNaN(sm) && sm>=0) ? sm : null;
   if(isNew) await db.insert('magazzino_articoli',row);
-  else await db.update('magazzino_articoli',row,`id=eq.${row.id}`);
+  else { delete row.created_at; await db.update('magazzino_articoli',row,`id=eq.${row.id}`); }
+  // Magazzini abilitati: inserisce/aggiorna quelli scelti, rimuove gli altri
+  const mags=art.mags||[];
+  if(mags.length) await db.upsert('magazzino_articoli_magazzini',mags.map(x=>({articolo_id:row.id,...x})),'articolo_id,magazzino');
+  const off=MAGAZZINI.map(m=>m.id).filter(id=>!mags.some(x=>x.magazzino===id));
+  if(off.length) await db.delete('magazzino_articoli_magazzini',`articolo_id=eq.${row.id}&magazzino=in.(${off.join(',')})`);
   await loadAll();
 }
 
@@ -297,7 +315,8 @@ document.addEventListener('keydown', e=>{
   _bcLast=now;
   if(e.key==='Enter'&&_bcBuf.length>=3){
     const art=findArtByBarcode(_bcBuf.trim());
-    if(art) openModal({type:'quick_scan',art});
+    if(art&&!isEnabled(art.id,state.mag)) showToast(`${art.codice} non è abilitato nel magazzino ${magNome(state.mag)}.`,'error');
+    else if(art) openModal({type:'quick_scan',art});
     else showToast('Barcode non trovato: '+_bcBuf.trim(),'error');
     _bcBuf=''; return;
   }
@@ -315,11 +334,12 @@ function findArtByBarcode(code){
 // MODAL MANAGER
 // ════════════════════════════════════════════════════════════════
 function openModal(m){
-  if(m.type==='carico'||m.type==='scarico'){ window._movModalita='pezzi'; window._movCodici=[]; window._movCodSel=new Set(); }
+  const isMov=m.type==='carico'||m.type==='scarico'||m.type==='sposta';
+  if(isMov){ window._movModalita='pezzi'; window._movCodici=[]; window._movCodSel=new Set(); }
   if(m.type==='codici_art'){ window._codStato='carico'; window._codQ=''; }
   state.modal=m; render();
-  if((m.type==='carico'||m.type==='scarico')&&m.preselectId) movArtChange();
-  if((m.type==='carico'||m.type==='scarico')&&!m.preselectId&&!state.isMobile){
+  if(isMov&&m.preselectId&&document.getElementById('mov-art')?.value) movArtChange();
+  if(isMov&&!document.getElementById('mov-art')?.value&&!state.isMobile){
     const q=document.getElementById('mov-art-q'); if(q) q.focus();
   }
 }
@@ -466,9 +486,14 @@ function mainHTML(){
   const alertList = Object.values(giacenze).filter(g=>scortaAttiva(g.art)&&!isSerial(g.art)&&g.pezzi<g.art.scorta_min);
   const mob = state.isMobile;
 
-  const tabsHTML = TABS.map(t=>`
-    <button class="tab-btn" data-tab="${t}" style="background:none;border:none;border-bottom:${t===state.tab?'2px solid var(--verde)':'2px solid transparent'};color:${t===state.tab?'var(--verde)':'var(--grigio)'};cursor:pointer;font-family:inherit;font-weight:600;font-size:${mob?10:12}px;letter-spacing:1.2px;padding:${mob?'10px 12px 8px':'14px 22px 12px'};text-transform:uppercase;white-space:nowrap;flex-shrink:0;">${t}</button>
-  `).join('');
+  // Pagine separate per magazzino (subito dopo il selettore) e pagine condivise (dopo il divisore)
+  const PERMAG=['Giacenze','Movimenti','Scadenze'];
+  const mc=magInfo(state.mag).color;
+  const tabBtn=t=>{ const on=t===state.tab, col=PERMAG.includes(t)?mc:'var(--verde)'; return `
+    <button class="tab-btn" data-tab="${t}" style="background:none;border:none;border-bottom:${on?'2px solid '+col:'2px solid transparent'};color:${on?col:'var(--grigio)'};cursor:pointer;font-family:inherit;font-weight:600;font-size:${mob?10:12}px;letter-spacing:1.2px;padding:${mob?'10px 12px 8px':'14px 18px 12px'};text-transform:uppercase;white-space:nowrap;flex-shrink:0;">${t}</button>`; };
+  const tabsMag=TABS.filter(t=>PERMAG.includes(t)), tabsShared=TABS.filter(t=>!PERMAG.includes(t));
+  const tabsHTML = magSwitchHTML() + tabsMag.map(tabBtn).join('')
+    + (tabsShared.length?`<div style="width:1px;align-self:stretch;background:var(--bordo);margin:12px 10px;flex-shrink:0;"></div>`+tabsShared.map(tabBtn).join(''):'');
 
   let content='';
   if(state.tab==='Giacenze')  content=renderGiacenze(giacenze,alertList);
@@ -480,10 +505,10 @@ function mainHTML(){
   else if(state.tab==='Log'&&isAdmin)       content=renderLog();
 
   const stats = [
-    {label:'Articoli',     val:state.articoli.length,  sub:'in anagrafica',  accent:'var(--verde)'},
+    {label:'Articoli',     val:magArticoli().length,   sub:'in '+magNome(state.mag), accent:'var(--verde)'},
     {label:'Sotto scorta', val:alertList.length,        sub:'in alert',       accent:alertList.length>0?'var(--rosso)':'var(--verde)'},
-    {label:'Carichi',      val:state.movimenti.filter(m=>m.tipo==='carico').length,  sub:'totali', accent:'var(--verde)'},
-    {label:'Scarichi',     val:state.movimenti.filter(m=>m.tipo==='scarico').length, sub:'totali', accent:'var(--grigio)'},
+    {label:'Carichi',      val:state.movimenti.filter(m=>movMag(m)===state.mag&&m.tipo==='carico').length,  sub:'in '+magNome(state.mag), accent:'var(--verde)'},
+    {label:'Scarichi',     val:state.movimenti.filter(m=>movMag(m)===state.mag&&m.tipo==='scarico').length, sub:'in '+magNome(state.mag), accent:'var(--grigio)'},
   ].map(s=>`
     <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;padding:14px 18px;min-width:110px;flex:1;border-top:3px solid ${s.accent};flex-shrink:0;">
       <div style="font-size:9px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">${s.label}</div>
@@ -495,7 +520,7 @@ function mainHTML(){
     <div style="background:var(--rosso-chiaro);border:1px solid #c0392b33;border-radius:8px;padding:12px 16px;margin-bottom:18px;display:flex;gap:10px;align-items:flex-start;">
       <span style="font-size:18px;">⚠️</span>
       <div>
-        <div style="font-weight:700;color:var(--rosso);font-size:13px;margin-bottom:4px;">Articoli sotto scorta minima</div>
+        <div style="font-weight:700;color:var(--rosso);font-size:13px;margin-bottom:4px;">Articoli sotto scorta minima · ${magNome(state.mag)}</div>
         <div style="display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12px;color:var(--grigio-scuro);">
           ${alertList.map(g=>`<span><b>${g.art.codice}</b> ${g.art.nome}: <span style="color:var(--rosso);font-weight:700;">${fmt(g.pezzi)} ${g.art.um}</span><span style="color:var(--grigio-chiaro);"> / min.${fmt(g.art.scorta_min)}</span></span>`).join('')}
         </div>
@@ -507,6 +532,7 @@ function mainHTML(){
 
   const fabHTML = mob ? `
     <div style="position:fixed;bottom:20px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:200;">
+      ${userMags().length>1?`<button onclick="apriSposta()" title="Sposta tra magazzini" style="width:44px;height:44px;border-radius:50%;background:#fff;color:var(--grigio-scuro);border:1px solid var(--bordo);font-size:18px;cursor:pointer;box-shadow:0 4px 16px #0000001a;align-self:center;">⇄</button>`:''}
       <button onclick="openModal({type:'scarico',preselectId:null})" style="width:52px;height:52px;border-radius:50%;background:var(--rosso);color:#fff;border:none;font-size:22px;cursor:pointer;box-shadow:0 4px 16px #c0392b44;">−</button>
       <button onclick="openModal({type:'carico',preselectId:null})"  style="width:52px;height:52px;border-radius:50%;background:var(--verde);color:#fff;border:none;font-size:22px;cursor:pointer;box-shadow:0 4px 16px #9DBF6044;">+</button>
     </div>` : '';
@@ -521,12 +547,12 @@ function mainHTML(){
             <div style="display:flex;align-items:center;gap:8px;">
               ${state.syncing?'<span style="font-size:10px;color:var(--verde);font-weight:700;">●</span>':''}
               ${alertList.length>0?`<div onclick="setTab('Giacenze')" style="background:var(--rosso-chiaro);border:1px solid #c0392b33;border-radius:20px;padding:3px 10px;font-size:10px;color:var(--rosso);font-weight:700;cursor:pointer;">⚠ ${alertList.length}</div>`:''}
-              ${!mob?`<button onclick="openModal({type:'carico',preselectId:null})" style="${btnStyle('outline',true)}">↑ Carico</button><button onclick="openModal({type:'scarico',preselectId:null})" style="${btnStyle('primary',true)}">↓ Scarico</button>`:''}
+              ${!mob?`<button onclick="openModal({type:'carico',preselectId:null})" style="${btnStyle('outline',true)}">↑ Carico</button><button onclick="openModal({type:'scarico',preselectId:null})" style="${btnStyle('primary',true)}">↓ Scarico</button>${userMags().length>1?`<button onclick="apriSposta()" style="${btnStyle('ghost',true)}">⇄ Sposta</button>`:''}`:''}
               ${!mob?`<span style="font-size:11px;color:var(--grigio);font-weight:600;">${state.utente?.nome_completo}</span>`:''}
               <button onclick="doLogout()" style="background:none;border:1px solid var(--bordo);color:var(--grigio);cursor:pointer;font-size:11px;font-weight:600;padding:4px 8px;border-radius:4px;font-family:inherit;">Esci</button>
             </div>
           </div>
-          <div style="display:flex;overflow-x:auto;scrollbar-width:none;">${tabsHTML}</div>
+          <div style="display:flex;align-items:center;overflow-x:auto;scrollbar-width:none;">${tabsHTML}</div>
         </div>
       </div>
       <!-- CONTENT -->
@@ -677,7 +703,7 @@ function exportGiacenze(){
     {key:'codice',label:'Codice'},{key:'nome',label:'Descrizione'},{key:'barcode',label:'Barcode'},
     {key:'um',label:'U.M.'},{key:'pezzi',label:'Giacenza'},{key:'pz_sc',label:'Pz/Sc'},
     {key:'scorta_min',label:'Scorta min.'},{key:'stato',label:'Stato'}
-  ],'giacenze.csv');
+  ],`giacenze_${state.mag}.csv`);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -688,6 +714,7 @@ function renderMovimenti(){
   const filtroT=window._movFiltro||'';
   const artMap=Object.fromEntries(state.articoli.map(a=>[a.id,a]));
   const rows=state.movimenti.filter(m=>{
+    if(movMag(m)!==state.mag) return false;
     const a=artMap[m.articolo_id];
     const match=!search||a?.codice?.toLowerCase().includes(search)||a?.nome?.toLowerCase().includes(search)||m.causale?.toLowerCase().includes(search)||m.nome_utente?.toLowerCase().includes(search);
     return match&&(!filtroT||m.tipo===filtroT)&&filtroArtOk(a,'mov');
@@ -749,6 +776,7 @@ function updateMovimentiTable(){
   const search=(window._movSearch||'').toLowerCase();
   const filtroT=window._movFiltro||'';
   const rows=state.movimenti.filter(m=>{
+    if(movMag(m)!==state.mag) return false;
     const a=artMap[m.articolo_id];
     const match=!search||a?.codice?.toLowerCase().includes(search)||a?.nome?.toLowerCase().includes(search)||m.causale?.toLowerCase().includes(search)||m.nome_utente?.toLowerCase().includes(search);
     return match&&(!filtroT||m.tipo===filtroT)&&filtroArtOk(a,'mov');
@@ -801,7 +829,7 @@ function updateMovimentiTable(){
 
 function exportMovimenti(){
   const artMap=Object.fromEntries(state.articoli.map(a=>[a.id,a]));
-  exportCSV(state.movimenti.map(m=>{ const a=artMap[m.articolo_id]; return {
+  exportCSV(state.movimenti.filter(m=>movMag(m)===state.mag).map(m=>{ const a=artMap[m.articolo_id]; return {
     data:m.data,tipo:m.tipo.toUpperCase(),utente:m.nome_utente||m.utente||'',
     codice:a?.codice||'?',nome:a?.nome||'?',quantita:m.quantita,
     causale:m.causale||'',scadenza:fmtData(m.scadenza),note:m.note||''
@@ -809,112 +837,46 @@ function exportMovimenti(){
     {key:'data',label:'Data/Ora'},{key:'tipo',label:'Tipo'},{key:'utente',label:'Utente'},
     {key:'codice',label:'Codice'},{key:'nome',label:'Descrizione'},{key:'quantita',label:'Qtà (pz)'},
     {key:'causale',label:'Causale'},{key:'scadenza',label:'Scadenza'},{key:'note',label:'Note'}
-  ],'movimenti.csv');
+  ],`movimenti_${state.mag}.csv`);
 }
 
 // ════════════════════════════════════════════════════════════════
 // TAB: ARTICOLI
 // ════════════════════════════════════════════════════════════════
-function renderArticoli(giacenze){
-  const raw = window._artSearch||'';
-  const search = raw.length>=3 ? raw.toLowerCase() : '';
-  const articoliFiltrati = (search
-    ? state.articoli.filter(a=>
-        a.codice.toLowerCase().includes(search)||
-        a.nome.toLowerCase().includes(search)||
-        (a.barcode&&a.barcode.toLowerCase().includes(search))
-      )
-    : state.articoli).filter(a=>filtroArtOk(a,'art'));
-
-  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=scortaAttiva(a)&&(g?.pezzi??0)<a.scorta_min; return `
-    <tr ${rowAttrs(a)}>
-      ${flagCell(a)}
-      <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
-      <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
-      <td style="padding:11px 14px;font-size:11px;color:var(--grigio);">${a.tipo_id?tipoNome(a.tipo_id):'<span style=\"color:var(--grigio-chiaro);">—</span>'}</td>
-      <td style="padding:11px 14px;font-weight:600;">${a.nome}${artBadges(a)}</td>
-      <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
-      <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
-      <td style="padding:11px 14px;">${scortaAttiva(a)?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
-      <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)}</span></td>
-      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;justify-content:flex-end;">
-        ${codiciBtn(a)}${noteBtn(a)}
-        <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
-        <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
-      </div></td>
-    </tr>`; }).join('');
+function renderArticoli(){
+  const raw=window._artSearch||'';
   return `
     <div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap;">
+      <div style="display:flex;align-items:center;margin-bottom:14px;gap:8px;flex-wrap:wrap;">
         <input id="art-search-box" placeholder="🔍  Cerca per codice, barcode o descrizione (min. 3 caratteri)…"
-          value="${raw}"
+          value="${escHtml(raw)}"
           oninput="window._artSearch=this.value;updateArticoliTable();"
-          style="${inpStyle()};max-width:420px;">
+          style="${inpStyle()};max-width:360px;">
+        ${filtroMagHTML()}
         ${filtriHTML('art','updateArticoliTable();')}
         <button onclick="openModal({type:'nuovo_art'})" style="${btnStyle('primary',false)};margin-left:auto;">+ Nuovo articolo</button>
       </div>
-      <div id="art-table-wrap">
-      ${articoliFiltrati.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(search||filtriAttivi('art')?'Nessun articolo trovato.':'Nessun articolo. Aggiungine uno per iniziare.')+'</div>':`
-        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
-          <table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-              ${['','Codice','Barcode','Tipo','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
-            </tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>`}
-      </div>
+      <div id="art-table-wrap">${artTableOrEmpty(articoliFiltrati())}</div>
     </div>`;
+}
+function artTableOrEmpty(list){
+  if(!list.length){
+    const filtrato=(window._artSearch||'').length>=3||filtriAttivi('art')||!!window._artMag;
+    return '<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(filtrato?'Nessun articolo trovato.':'Nessun articolo. Aggiungine uno per iniziare.')+'</div>';
+  }
+  return articoliTableHTML(list);
 }
 
 // Aggiorna solo la tabella articoli senza perdere il focus sull'input
 function updateArticoliTable(){
-  const wrap = document.getElementById('art-table-wrap');
-  if(!wrap) { render(); return; }
-  const giacenze = calcGiacenze();
-  const raw = window._artSearch||'';
-  const search = raw.length>=3 ? raw.toLowerCase() : '';
-  const articoliFiltrati = (search
-    ? state.articoli.filter(a=>
-        a.codice.toLowerCase().includes(search)||
-        a.nome.toLowerCase().includes(search)||
-        (a.barcode&&a.barcode.toLowerCase().includes(search))
-      )
-    : state.articoli).filter(a=>filtroArtOk(a,'art'));
-  if(articoliFiltrati.length===0){
-    wrap.innerHTML='<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">'+(search||filtriAttivi('art')?'Nessun articolo trovato.':'Nessun articolo.')+'</div>';
-    return;
-  }
-  const rows=articoliFiltrati.map(a=>{ const g=giacenze[a.id]; const sotto=scortaAttiva(a)&&(g?.pezzi??0)<a.scorta_min; return `
-    <tr ${rowAttrs(a)}>
-      ${flagCell(a)}
-      <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
-      <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
-      <td style="padding:11px 14px;font-size:11px;color:var(--grigio);">${a.tipo_id?tipoNome(a.tipo_id):'<span style=\"color:var(--grigio-chiaro);">—</span>'}</td>
-      <td style="padding:11px 14px;font-weight:600;">${a.nome}${artBadges(a)}</td>
-      <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
-      <td style="padding:11px 14px;color:var(--grigio);">${a.pezzi_scatola||'—'}</td>
-      <td style="padding:11px 14px;">${scortaAttiva(a)?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(a.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
-      <td style="padding:11px 14px;"><span style="font-weight:700;color:${sotto?'var(--rosso)':(g?.pezzi??0)===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(g?.pezzi??0)}</span></td>
-      <td style="padding:11px 14px;"><div style="display:flex;gap:6px;justify-content:flex-end;">
-        ${codiciBtn(a)}${noteBtn(a)}
-        <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
-        <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
-      </div></td>
-    </tr>`; }).join('');
-  wrap.innerHTML=`<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
-    <table style="width:100%;border-collapse:collapse;font-size:13px;">
-      <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-        ${['','Codice','Barcode','Tipo','Descrizione','U.M.','Pz/Sc','Scorta min.','Giacenza',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-  </div>`;
+  const wrap=document.getElementById('art-table-wrap');
+  if(!wrap){ render(); return; }
+  wrap.innerHTML=artTableOrEmpty(articoliFiltrati());
 }
 
 function confirmDeleteArt(id){
-  const g=calcGiacenze();
-  if(g[id]?.pezzi!==0){ showToast('Impossibile eliminare: giacenza non zero.','error'); return; }
+  const conGiac=MAGAZZINI.filter(m=>giacRaw(id,m.id)!==0);
+  if(conGiac.length){ showToast('Impossibile eliminare: giacenza non zero in '+conGiac.map(m=>m.nome).join(' e ')+'.','error'); return; }
   if(!confirm('Eliminare definitivamente questo articolo e tutti i suoi movimenti?')) return;
   deleteArticolo(id).then(()=>showToast('Articolo eliminato.')).catch(e=>showToast(e.message,'error'));
 }
@@ -929,7 +891,7 @@ function renderScadenze(){
   // Calcola giacenza netta per ogni (articolo, scadenza)
   const lotti={}; // key: "artId|YYYY-MM-DD"
   state.movimenti.forEach(m=>{
-    if(!m.scadenza||!artMap[m.articolo_id]) return;
+    if(!m.scadenza||!artMap[m.articolo_id]||movMag(m)!==state.mag) return;
     const k=m.articolo_id+'|'+m.scadenza;
     if(!lotti[k]) lotti[k]={artId:m.articolo_id,scadenza:m.scadenza,pezzi:0};
     lotti[k].pezzi+=m.tipo==='carico'?m.quantita:-m.quantita;
@@ -1007,6 +969,7 @@ function renderTipi(){
       <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
         <td style="padding:11px 14px;font-weight:600;">${t.nome}</td>
         <td style="padding:11px 14px;">${t.codice_singolo?pill('✓ Attivo','var(--verde)'):'<span style="color:var(--grigio-chiaro);font-size:11px;">—</span>'}</td>
+        <td style="padding:11px 14px;"><div style="display:flex;gap:4px;flex-wrap:wrap;">${tipoMags(t).map(id=>magPill(id)).join('')}</div></td>
         <td style="padding:11px 14px;color:var(--grigio);font-size:12px;">${used} articol${used===1?'o':'i'}</td>
         <td style="padding:11px 14px;">
           <div style="display:flex;gap:6px;">
@@ -1027,7 +990,7 @@ function renderTipi(){
         : `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
             <table style="width:100%;border-collapse:collapse;font-size:13px;">
               <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-                ${['Tipo prodotto','Codice singolo','Utilizzo',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+                ${['Tipo prodotto','Codice singolo','Magazzini','Utilizzo',''].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
               </tr></thead>
               <tbody>${rows}</tbody>
             </table>
@@ -1051,6 +1014,7 @@ function renderUtenti(){
       <td style="padding:11px 14px;font-weight:600;">${u.nome_completo}</td>
       <td style="padding:11px 14px;color:var(--grigio);font-family:monospace;font-size:12px;">@${u.username}</td>
       <td style="padding:11px 14px;">${pill(u.ruolo,u.ruolo==='admin'?'var(--verde)':'var(--grigio)')}</td>
+      <td style="padding:11px 14px;">${userMagsCell(u)}</td>
       <td style="padding:11px 14px;">${pill(u.attivo?'Attivo':'Disabilitato',u.attivo?'var(--verde)':'var(--rosso)')}</td>
       <td style="padding:11px 14px;color:var(--grigio);font-size:11px;">${u.created_at}</td>
       <td style="padding:11px 14px;"><div style="display:flex;gap:6px;">
@@ -1066,7 +1030,7 @@ function renderUtenti(){
       <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-            ${['Nome','Username','Ruolo','Stato','Creato il','Azioni'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
+            ${['Nome','Username','Ruolo','Magazzini','Stato','Creato il','Azioni'].map(h=>`<th style="text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -1087,8 +1051,8 @@ function renderLog(){
   const dal=window._logDal||''; const al=window._logAl||'';
   const PER_PAG=10;
   if(!window._logPag) window._logPag=1;
-  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password'};
-  const COLOR={login:'var(--verde)',logout:'var(--grigio)',carico:'var(--verde)',scarico:'var(--rosso)',crea_utente:'var(--arancio)',reset_password:'var(--arancio)'};
+  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password',sposta:'Spostamento'};
+  const COLOR={login:'var(--verde)',logout:'var(--grigio)',carico:'var(--verde)',scarico:'var(--rosso)',crea_utente:'var(--arancio)',reset_password:'var(--arancio)',sposta:'#3E9E9A'};
   const parseD=str=>{ if(!str) return null; const [dp]=str.split(','); const [d,m,y]=dp.trim().split('/'); return new Date(`${y}-${m}-${d}`); };
   const dalD=dal?new Date(dal):null;
   const alD =al ?new Date(al) :null; if(alD) alD.setHours(23,59,59);
@@ -1126,7 +1090,7 @@ function renderLog(){
                 <td style="padding:10px 14px;color:var(--grigio);font-size:11px;white-space:nowrap;">${e.data}</td>
                 <td style="padding:10px 14px;"><div style="font-weight:600;font-size:13px;">${e.nome_completo||'—'}</div><div style="font-size:11px;color:var(--grigio);">@${e.utente||''}</div></td>
                 <td style="padding:10px 14px;">${pill(LABEL[e.tipo]||e.tipo,COLOR[e.tipo]||'var(--grigio)')}</td>
-                <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${e.causale||e.target_user||'—'}</td>
+                <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${logDettaglio(e)}</td>
               </tr>`).join('')}
             </tbody>
           </table>
@@ -1139,8 +1103,8 @@ function renderLog(){
 
 function updateLogTable(){
   // Aggiorna solo il contenuto del log senza ricostruire i filtri (preserva il focus)
-  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password'};
-  const COLOR={login:'var(--verde)',logout:'var(--grigio)',carico:'var(--verde)',scarico:'var(--rosso)',crea_utente:'var(--arancio)',reset_password:'var(--arancio)'};
+  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password',sposta:'Spostamento'};
+  const COLOR={login:'var(--verde)',logout:'var(--grigio)',carico:'var(--verde)',scarico:'var(--rosso)',crea_utente:'var(--arancio)',reset_password:'var(--arancio)',sposta:'#3E9E9A'};
   const PER_PAG=10;
   const search=(window._logSearch||'').toLowerCase();
   const dal=window._logDal||''; const al=window._logAl||'';
@@ -1188,7 +1152,7 @@ function updateLogTable(){
             <td style="padding:10px 14px;color:var(--grigio);font-size:11px;white-space:nowrap;">${e.data}</td>
             <td style="padding:10px 14px;"><div style="font-weight:600;font-size:13px;">${e.nome_completo||'—'}</div><div style="font-size:11px;color:var(--grigio);">@${e.utente||''}</div></td>
             <td style="padding:10px 14px;">${pill(LABEL[e.tipo]||e.tipo,COLOR[e.tipo]||'var(--grigio)')}</td>
-            <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${e.causale||e.target_user||'—'}</td>
+            <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${logDettaglio(e)}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -1197,8 +1161,8 @@ function updateLogTable(){
 }
 
 function exportLog(){
-  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password'};
-  exportCSV(state.logEntries.map(e=>({data:e.data,utente:e.nome_completo||e.utente,tipo:LABEL[e.tipo]||e.tipo,dettaglio:e.causale||e.target_user||''})),
+  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password',sposta:'Spostamento'};
+  exportCSV(state.logEntries.map(e=>({data:e.data,utente:e.nome_completo||e.utente,tipo:LABEL[e.tipo]||e.tipo,dettaglio:(e.magazzino?magNome(e.magazzino)+' · ':'')+(e.causale||e.target_user||'')})),
     [{key:'data',label:'Data/Ora'},{key:'utente',label:'Utente'},{key:'tipo',label:'Tipo'},{key:'dettaglio',label:'Dettaglio'}],'log_accessi.csv');
 }
 
@@ -1209,7 +1173,7 @@ function renderModal(giacenze){
   const m=state.modal;
   let html='';
   if(m.type==='quick_scan') html=quickScanModal(m.art,giacenze);
-  else if(m.type==='carico'||m.type==='scarico') html=movimentoModal(m.type,m.preselectId,giacenze);
+  else if(m.type==='carico'||m.type==='scarico'||m.type==='sposta') html=movimentoModal(m.type,m.preselectId,giacenze);
   else if(m.type==='nuovo_tipo') html=tipoModal(null);
   else if(m.type==='edit_tipo') html=tipoModal(m.tipo);
   else if(m.type==='nuovo_art'||m.type==='edit_art') html=articoloModal(m.art);
@@ -1236,6 +1200,7 @@ function modalHeader(title,color){
 
 // Quick scan
 function quickScanModal(art,giacenze){
+  art=artById(art.id,state.mag)||art;
   const g=giacenze[art.id]; const sotto=scortaAttiva(art)&&(g?.pezzi??0)<art.scorta_min;
   return `${modalHeader('Articolo rilevato')}
     <div style="display:flex;flex-direction:column;gap:16px;">
@@ -1250,16 +1215,17 @@ function quickScanModal(art,giacenze){
         <button onclick="closeModal();setTimeout(()=>openModal({type:'carico',preselectId:'${art.id}'}),50);" style="${btnStyle('outline',false,true)}">↑ Carico</button>
         <button onclick="closeModal();setTimeout(()=>openModal({type:'scarico',preselectId:'${art.id}'}),50);" style="background:var(--rosso);color:#fff;border:none;border-radius:6px;padding:10px 22px;cursor:pointer;font-family:inherit;font-weight:600;font-size:13px;flex:1;">↓ Scarico</button>
       </div>
+      ${userMags().length>1?`<button onclick="closeModal();setTimeout(()=>apriSposta('${art.id}'),50);" style="${btnStyle('ghost',false,true)}">⇄ Sposta in altro magazzino</button>`:''}
       <button onclick="closeModal();" style="${btnStyle('ghost',false,true)}">Chiudi</button>
     </div>`;
 }
 
 
 // Giacenza per lotto: { 'YYYY-MM-DD': pezzi_disponibili }
-function calcLottiPerArticolo(articoloId){
+function calcLottiPerArticolo(articoloId,mag=curMag()){
   const lotti={};
   state.movimenti.forEach(m=>{
-    if(m.articolo_id!==articoloId||!m.scadenza) return;
+    if(m.articolo_id!==articoloId||!m.scadenza||movMag(m)!==mag) return;
     if(!lotti[m.scadenza]) lotti[m.scadenza]=0;
     lotti[m.scadenza]+= m.tipo==='carico'?m.quantita:-m.quantita;
   });
@@ -1270,17 +1236,16 @@ function calcLottiPerArticolo(articoloId){
 
 // Movimento
 function movimentoModal(tipo,preselectId,giacenze){
-  const ac=tipo==='carico'?'var(--verde)':'var(--rosso)';
-  const causali=tipo==='carico'?CAUSALI_CARICO:CAUSALI_SCARICO;
-  const selArt=preselectId?state.articoli.find(a=>a.id===preselectId):null;
-  const artOpts=state.articoli.map(a=>`<option value="${a.id}" ${preselectId===a.id?'selected':''}>${a.codice} — ${a.nome}</option>`).join('');
+  const ac=tipo==='carico'?'var(--verde)':tipo==='sposta'?'var(--grigio-scuro)':'var(--rosso)';
+  const causali=tipo==='carico'?CAUSALI_CARICO:tipo==='sposta'?[]:CAUSALI_SCARICO;
+  const selArt=preselectId?(comboPool().find(a=>a.id===preselectId)||null):null;
   const causOpts=causali.map((c,i)=>`<option value="${c}" ${i===0?'selected':''}>${c}</option>`).join('');
   const infoBar=selArt?(()=>{ const g=giacenze[selArt.id]; return `<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${selArt.nome}</span><span>Giacenza: <b style="color:var(--testo);">${fmt(g?.pezzi??0)} ${selArt.um}</b></span>${selArt.pezzi_scatola?`<span>Pz/sc: <b style="color:var(--testo);">${selArt.pezzi_scatola}</b></span>`:''} ${scortaAttiva(selArt)?`<span>Min: <b style="color:${(g?.pezzi??0)<selArt.scorta_min?'var(--rosso)':'var(--testo)'};">${fmt(selArt.scorta_min)}</b></span>`:''}</div>`; })():'';
 
   // Per scarico: pre-calcola le scadenze disponibili se articolo pre-selezionato
-  const scadSelect = tipo==='scarico' && selArt
+  const scadSelect = tipo!=='carico' && selArt
     ? buildScadenzaSelect(selArt.id)
-    : tipo==='scarico'
+    : tipo!=='carico'
       ? '<select id="mov-scad" disabled style="'+inpStyle()+';opacity:.5;"><option>— seleziona prima l\'articolo —</option></select>'
       : `<div style="display:flex;flex-direction:column;gap:8px;">
           <input type="date" id="mov-scad" style="${inpStyle()}" onchange="document.getElementById('cb-no-scad').checked=false;">
@@ -1298,8 +1263,9 @@ function movimentoModal(tipo,preselectId,giacenze){
        </div>`
     : '';
 
-  return `${modalHeader(tipo==='carico'?'Registra carico':'Registra scarico',ac)}
+  return `${modalHeader(movTitle(tipo),ac)}
     <div style="display:flex;flex-direction:column;gap:14px;" id="mov-form">
+      ${tipo==='sposta'?spostaBarHTML():''}
       <div style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
         <span>Articolo <span style="color:var(--verde);">*</span></span>
         <div style="position:relative;">
@@ -1313,20 +1279,20 @@ function movimentoModal(tipo,preselectId,giacenze){
             style="position:absolute;right:6px;top:50%;transform:translateY(-50%);border:none;background:transparent;color:var(--grigio-chiaro);font-size:18px;cursor:pointer;display:${selArt?'block':'none'};">×</button>
           <div id="mov-art-list" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--bordo);border-radius:8px;box-shadow:0 8px 24px #0000001f;max-height:260px;overflow-y:auto;z-index:1000;"></div>
         </div>
-        <span style="font-size:10px;color:var(--grigio-chiaro);font-weight:400;">Scrivi per filtrare, usa ↑ ↓ e Invio, oppure spara il barcode col lettore.</span>
+        <span style="font-size:10px;color:var(--grigio-chiaro);font-weight:400;">${tipo==='sposta'?'Solo articoli abilitati in entrambi i magazzini. ':''}Scrivi per filtrare, usa ↑ ↓ e Invio, oppure spara il barcode col lettore.</span>
       </div>
       <div id="mov-info">${infoBar}</div>
       <div id="mov-sc-toggle">${scToggleInit}</div>
       <div id="mov-qty-wrap">
         <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Quantità <span style="color:var(--verde);">*</span></span>
-          <input type="number" id="mov-qty" min="1" oninput="${tipo==='scarico'?'checkQtyScarico();':''}" style="${inpStyle()}">
+          <input type="number" id="mov-qty" min="1" oninput="${tipo!=='carico'?'checkQtyScarico();':''}" style="${inpStyle()}">
         </label>
       </div>
-      <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Causale <span style="color:var(--verde);">*</span></span>
+      <label style="display:${tipo==='sposta'?'none':'flex'};flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Causale <span style="color:var(--verde);">*</span></span>
         <select id="mov-causale" style="${inpStyle()}">${causOpts}</select>
       </label>
       <label id="mov-scad-label" style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
-        <span>${tipo==='scarico'?'Lotto / Data di scadenza':'Data di scadenza'} <span style="color:var(--verde);">*</span></span>
+        <span>${tipo!=='carico'?'Lotto / Data di scadenza':'Data di scadenza'} <span style="color:var(--verde);">*</span></span>
         <div id="mov-scad-wrap">${scadSelect}</div>
       </label>
       <div id="mov-lotto-info"></div>
@@ -1337,7 +1303,7 @@ function movimentoModal(tipo,preselectId,giacenze){
       <div id="mov-err"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
         <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
-        <button id="mov-submit-btn" onclick="submitMovimento('${tipo}');" style="background:${ac};color:#fff;border:none;border-radius:6px;padding:10px 22px;cursor:pointer;font-family:inherit;font-weight:600;font-size:13px;box-shadow:0 2px 8px ${ac}44;">Conferma ${tipo}</button>
+        <button id="mov-submit-btn" onclick="submitMovimento('${tipo}');" style="background:${ac};color:#fff;border:none;border-radius:6px;padding:10px 22px;cursor:pointer;font-family:inherit;font-weight:600;font-size:13px;box-shadow:0 2px 8px ${ac}44;">${tipo==='sposta'?'Conferma spostamento':'Conferma '+tipo}</button>
       </div>
     </div>`;
 }
@@ -1352,7 +1318,7 @@ function toggleNoScad(checked){
 // Costruisce la select delle scadenze disponibili per un articolo (scarico)
 function buildScadenzaSelect(artId){
   const lotti=calcLottiPerArticolo(artId);
-  const art=state.articoli.find(a=>a.id===artId);
+  const art=artById(artId);
   const sorted=Object.entries(lotti).sort(([a],[b])=>a.localeCompare(b));
   if(!sorted.length){
     return `<select id="mov-scad" disabled style="${inpStyle()};opacity:.5;"><option>Nessun lotto disponibile</option></select>`;
@@ -1367,7 +1333,7 @@ function movScadChange(artId){
   const scad=noScad?NO_SCAD_ISO:(document.getElementById('mov-scad')?.value||'');
   if(!scad){ document.getElementById('mov-lotto-info').innerHTML=''; return; }
   const lotti=calcLottiPerArticolo(artId);
-  const art=state.articoli.find(a=>a.id===artId);
+  const art=artById(artId);
   const disp=lotti[scad]??0;
   const scadLabel=isNoScad(scad)?'Senza scadenza':fmtData(scad);
   document.getElementById('mov-lotto-info').innerHTML=`
@@ -1391,7 +1357,7 @@ function checkQtyScarico(){
   if(!scad||!artId||!qtyEl||!btn) return;
   const lotti=calcLottiPerArticolo(artId);
   const disp=lotti[scad]??0;
-  const art=state.articoli.find(a=>a.id===artId);
+  const art=artById(artId);
   const qty=parseInt(qtyEl.value)||0;
   if(qty>disp&&qty>0){
     qtyEl.style.borderColor='var(--rosso)';
@@ -1414,9 +1380,9 @@ function checkQtyScarico(){
 let _comboIdx=-1, _comboRes=[];
 function comboSearch(q){
   const words=q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if(!words.length) return state.articoli.slice().sort((a,b)=>a.codice.localeCompare(b.codice));
+  if(!words.length) return comboPool().sort((a,b)=>a.codice.localeCompare(b.codice));
   const ql=q.trim().toLowerCase();
-  return state.articoli
+  return comboPool()
     .filter(a=>{ const hay=(a.codice+' '+(a.barcode||'')+' '+a.nome).toLowerCase(); return words.every(w=>hay.includes(w)); })
     .sort((a,b)=>{
       const sc=x=>(x.codice.toLowerCase()===ql||(x.barcode||'').toLowerCase()===ql)?0:x.codice.toLowerCase().startsWith(ql)?1:x.nome.toLowerCase().startsWith(ql)?2:3;
@@ -1438,7 +1404,7 @@ function comboRender(q){
   const list=document.getElementById('mov-art-list'); if(!list) return;
   _comboRes=comboSearch(q);
   const words=q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const g=calcGiacenze();
+  const g=calcGiacenze(curMag());
   if(!_comboRes.length){
     list.innerHTML='<div style="padding:12px 14px;font-size:12px;color:var(--grigio-chiaro);font-weight:400;">Nessun articolo trovato.</div>';
   } else {
@@ -1476,7 +1442,7 @@ function comboInput(v){
   document.getElementById('mov-art-x').style.display=v?'block':'none';
   // match esatto su barcode (lettore senza Invio) → selezione immediata
   const vl=v.trim().toLowerCase();
-  const exact=vl.length>=6&&state.articoli.find(a=>a.barcode&&a.barcode.toLowerCase()===vl);
+  const exact=vl.length>=6&&comboPool().find(a=>a.barcode&&a.barcode.toLowerCase()===vl);
   if(exact){ comboSelect(exact); return; }
   _comboIdx=-1;
   if(!v.trim()){ comboClose(); return; }
@@ -1491,7 +1457,7 @@ function comboKey(e){
   else if(e.key==='Enter'){
     e.preventDefault();
     const vl=e.target.value.trim().toLowerCase();
-    const exact=state.articoli.find(a=>a.codice.toLowerCase()===vl||(a.barcode&&a.barcode.toLowerCase()===vl));
+    const exact=comboPool().find(a=>a.codice.toLowerCase()===vl||(a.barcode&&a.barcode.toLowerCase()===vl));
     if(exact) comboSelect(exact);
     else if(_comboIdx>=0&&_comboRes[_comboIdx]) comboSelect(_comboRes[_comboIdx]);
     else if(_comboRes.length===1) comboSelect(_comboRes[0]);
@@ -1530,8 +1496,8 @@ function movArtReset(){
 
 function movArtChange(){
   const id=document.getElementById('mov-art')?.value;
-  const art=state.articoli.find(a=>a.id===id);
-  const g=calcGiacenze();
+  const art=artById(id);
+  const g=calcGiacenze(curMag());
   const infoEl=document.getElementById('mov-info');
   const scEl=document.getElementById('mov-sc-toggle');
   const scadWrap=document.getElementById('mov-scad-wrap');
@@ -1557,11 +1523,12 @@ function movArtChange(){
       <button id="sc-sc" onclick="setModalita('scatole','${art.id}')" style="flex:1;padding:9px;border-radius:6px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;border:1.5px solid var(--bordo);background:#fff;color:var(--grigio);">Scatole intere</button>
     </div>`;
   } else if(scEl){ scEl.innerHTML=''; }
+  if(state.modal?.type==='sposta') infoEl.innerHTML=spostaInfoHTML(art);
   movSerialUI(art);
 }
 
 function setModalita(m,artId){
-  const art=state.articoli.find(a=>a.id===artId);
+  const art=artById(artId);
   const wrap=document.getElementById('mov-qty-wrap');
   if(!wrap||!art) return;
   if(m==='scatole'){
@@ -1578,8 +1545,9 @@ function setModalita(m,artId){
 
 async function submitMovimento(tipo){
   const errEl=document.getElementById('mov-err'); errEl.innerHTML='';
+  if(tipo==='sposta') return submitSposta();
   const artId=document.getElementById('mov-art')?.value;
-  const art=state.articoli.find(a=>a.id===artId);
+  const art=artById(artId);
   const qtyEl=document.getElementById('mov-qty');
   const noScad=document.getElementById('cb-no-scad')?.checked||false;
   const scad=noScad?NO_SCAD_ISO:(document.getElementById('mov-scad')?.value||'');
@@ -1606,6 +1574,321 @@ async function submitMovimento(tipo){
     closeModal(); showToast(`${tipo==='carico'?'Carico':'Scarico'} registrato.`);
     window._movModalita='pezzi';
   } catch(e){ errEl.innerHTML=errBox(e.message); if(btn){btn.innerHTML=`Conferma ${tipo}`;btn.disabled=false;} }
+}
+
+// ════════════════════════════════════════════════════════════════
+// MAGAZZINI (Chirurgia / Ambulatorio)
+// ════════════════════════════════════════════════════════════════
+const MAGAZZINI = [
+  {id:'chirurgia',   nome:'Chirurgia',   color:'#9DBF60', bg:'#eef4e3'},
+  {id:'ambulatorio', nome:'Ambulatorio', color:'#3E9E9A', bg:'#e3f2f1'},
+];
+const CAUSALE_INVIO     = 'Invio ad altro magazzino';
+const CAUSALE_RICEZIONE = 'Ricezione da altro magazzino';
+const magInfo = id => MAGAZZINI.find(m=>m.id===id) || MAGAZZINI[0];
+const magNome = id => magInfo(id).nome;
+const movMag  = m  => m.magazzino || 'chirurgia';       // righe precedenti alla migrazione
+const codMag  = c  => c.magazzino || 'chirurgia';
+const tipoMags = t => (Array.isArray(t?.magazzini) && t.magazzini.length) ? t.magazzini : ['chirurgia'];
+
+// Magazzini accessibili all'utente collegato (gli amministratori li vedono tutti)
+function userMags(u=state.utente){
+  if(!u) return [];
+  if(u.ruolo==='admin') return MAGAZZINI.map(m=>m.id);
+  const l=(Array.isArray(u.magazzini)&&u.magazzini.length?u.magazzini:['chirurgia']).filter(id=>MAGAZZINI.some(m=>m.id===id));
+  return l.length?l:['chirurgia'];
+}
+function ensureMag(){
+  const l=userMags();
+  if(!l.includes(state.mag)) state.mag=l[0]||'chirurgia';
+}
+// Magazzino su cui lavora la modale aperta (per lo spostamento è quello di partenza)
+function curMag(){ return state.modal?.type==='sposta' ? state.modal.from : state.mag; }
+
+// ── Abilitazione articolo ↔ magazzino ──
+function artMagRow(artId,mag){ return state.artMagIdx[artId+'|'+mag]||null; }
+function isEnabled(artId,mag){ return !!artMagRow(artId,mag); }
+function artMagsOf(artId){ return MAGAZZINI.map(m=>m.id).filter(id=>isEnabled(artId,id)); }
+// Articolo "visto" da un magazzino: pezzi per scatola e scorta minima sono quelli del magazzino
+function artById(id,mag=curMag()){
+  const a=state.articoli.find(x=>x.id===id); if(!a) return null;
+  const r=artMagRow(id,mag);
+  return {...a, pezzi_scatola:r?.pezzi_scatola??null, scorta_min:r?.scorta_min??null};
+}
+function magArticoli(mag=state.mag){
+  return state.articoli.filter(a=>isEnabled(a.id,mag)).map(a=>artById(a.id,mag));
+}
+function buildArtMagIdx(){
+  state.artMagIdx={};
+  state.artMag.forEach(r=>{ state.artMagIdx[r.articolo_id+'|'+r.magazzino]=r; });
+}
+
+// Elenco articoli selezionabili nella combobox della modale aperta
+function comboPool(){
+  if(state.modal?.type==='sposta'){
+    const {from,to}=state.modal;
+    return state.articoli.filter(a=>isEnabled(a.id,from)&&isEnabled(a.id,to)).map(a=>artById(a.id,from));
+  }
+  return magArticoli(state.mag);
+}
+
+function setMag(id){
+  if(!userMags().includes(id)||id===state.mag) return;
+  state.mag=id;
+  // i filtri per tipo non validi nel nuovo magazzino vengono azzerati
+  ['giac','mov','scad'].forEach(k=>{ const t=window['_'+k+'Tipo']; if(t&&t!=='_none'&&!tipoMags(state.tipi.find(x=>x.id===t)).includes(id)) window['_'+k+'Tipo']=''; });
+  render();
+}
+
+function magPill(id,small=true){
+  const m=magInfo(id);
+  return `<span style="display:inline-flex;align-items:center;gap:5px;background:${m.bg};color:${m.color};border:1px solid ${m.color}66;border-radius:20px;font-size:${small?9:11}px;font-weight:700;padding:${small?'1px 8px':'3px 10px'};letter-spacing:.8px;text-transform:uppercase;white-space:nowrap;filter:saturate(1.1) brightness(.85);">${m.nome}</span>`;
+}
+
+// Selettore del magazzino (all'inizio della barra delle pagine)
+function magSwitchHTML(){
+  const l=userMags();
+  if(l.length<2) return `<div style="display:flex;align-items:center;padding:0 14px 0 0;flex-shrink:0;">${magPill(l[0]||'chirurgia',false)}</div>`;
+  return `<div style="display:flex;align-items:center;padding:6px 14px 6px 0;flex-shrink:0;">
+    <div style="display:flex;background:var(--grigio-sfondo);border:1px solid var(--bordo);border-radius:8px;padding:3px;gap:3px;">
+      ${l.map(id=>{ const m=magInfo(id), on=id===state.mag; return `<button onclick="setMag('${id}')" title="Passa al magazzino ${m.nome}"
+        style="border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-family:inherit;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;white-space:nowrap;
+        background:${on?m.color:'transparent'};color:${on?'#fff':'var(--grigio)'};box-shadow:${on?'0 1px 4px '+m.color+'55':'none'};">${m.nome}</button>`; }).join('')}
+    </div>
+  </div>`;
+}
+
+// ── Pagina Articoli: colonne per magazzino ──
+function filtroMagOk(a){
+  const f=window._artMag||'';
+  if(!f) return true;
+  const mags=artMagsOf(a.id);
+  if(f==='entrambi') return MAGAZZINI.every(m=>mags.includes(m.id));
+  if(f.startsWith('solo_')) return mags.length===1&&mags[0]===f.slice(5);
+  return true;
+}
+function filtroMagHTML(){
+  const f=window._artMag||'';
+  const st=`${inpStyle()};width:auto;min-width:150px;max-width:210px;padding:9px 10px;font-size:13px;${f?'border-color:var(--verde);background:var(--verde-pale);':''}`;
+  return `<select title="Filtra per magazzino" onchange="window._artMag=this.value;filtroStyle(this);updateArticoliTable();" style="${st}">
+    <option value="" ${!f?'selected':''}>Tutti i magazzini</option>
+    <option value="entrambi" ${f==='entrambi'?'selected':''}>Entrambi</option>
+    ${MAGAZZINI.map(m=>`<option value="solo_${m.id}" ${f==='solo_'+m.id?'selected':''}>Solo ${m.nome}</option>`).join('')}
+  </select>`;
+}
+function articoliFiltrati(){
+  const raw=window._artSearch||'';
+  const search=raw.length>=3?raw.toLowerCase():'';
+  return state.articoli.filter(a=>
+    (!search||a.codice.toLowerCase().includes(search)||a.nome.toLowerCase().includes(search)||(a.barcode&&a.barcode.toLowerCase().includes(search)))
+    &&filtroArtOk(a,'art')&&filtroMagOk(a));
+}
+function articoliTableHTML(list){
+  const G=Object.fromEntries(MAGAZZINI.map(m=>[m.id,calcGiacenze(m.id)]));
+  const th='text-align:left;padding:10px 14px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;';
+  const thN='text-align:right;padding:8px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.6px;white-space:nowrap;';
+  const tdN='padding:11px 10px;text-align:right;white-space:nowrap;';
+  const rows=list.map(a=>{
+    const cells=MAGAZZINI.map((m,i)=>{
+      const sep=i===0?'border-left:2px solid var(--bordo);':'border-left:1px solid var(--bordo);';
+      const r=artMagRow(a.id,m.id);
+      if(!r) return `<td colspan="3" style="padding:11px 10px;text-align:center;font-size:10px;color:var(--grigio-chiaro);letter-spacing:.5px;${sep}">non abilitato</td>`;
+      const pz=G[m.id][a.id]?.pezzi??0;
+      const sotto=r.scorta_min!=null&&pz<r.scorta_min;
+      return `<td style="${tdN}color:var(--grigio);${sep}">${r.pezzi_scatola||'—'}</td>
+        <td style="${tdN}">${r.scorta_min!=null?`<span style="font-weight:600;color:${sotto?'var(--rosso)':'var(--grigio-scuro)'};">${fmt(r.scorta_min)}</span>`:'<span style="color:var(--grigio-chiaro);">—</span>'}</td>
+        <td style="${tdN}"><span style="font-weight:700;color:${sotto?'var(--rosso)':pz===0?'var(--grigio-chiaro)':'var(--testo)'};">${fmt(pz)}</span></td>`;
+    }).join('');
+    return `<tr ${rowAttrs(a)}>
+      ${flagCell(a)}
+      <td style="padding:11px 14px;">${pill(a.codice,'var(--grigio)')}</td>
+      <td style="padding:11px 14px;font-size:11px;color:var(--grigio-chiaro);font-family:monospace;">${a.barcode||'—'}</td>
+      <td style="padding:11px 14px;font-weight:600;">${a.nome}${artBadges(a)}</td>
+      <td style="padding:11px 14px;color:var(--grigio);">${a.um}</td>
+      ${cells}
+      <td style="padding:11px 14px;border-left:2px solid var(--bordo);"><div style="display:flex;gap:6px;justify-content:flex-end;">
+        ${codiciBtn(a,null)}${noteBtn(a)}
+        <button onclick="openModal({type:'edit_art',art:${JSON.stringify(a).replace(/"/g,'&quot;')}})" style="${btnStyle('ghost',true)}">✎</button>
+        <button onclick="confirmDeleteArt('${a.id}')" style="${btnStyle('danger',true)}">✕</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+  return `<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="background:var(--grigio-sfondo);">
+          <th rowspan="2" style="${th}border-bottom:1px solid var(--bordo);"></th>
+          ${['Codice','Barcode','Descrizione','U.M.'].map(h=>`<th rowspan="2" style="${th}border-bottom:1px solid var(--bordo);">${h}</th>`).join('')}
+          ${MAGAZZINI.map((m,i)=>`<th colspan="3" style="text-align:center;padding:8px 10px 4px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:${m.color};filter:brightness(.85);border-top:3px solid ${m.color};${i===0?'border-left:2px solid var(--bordo);':'border-left:1px solid var(--bordo);'}">${m.nome}</th>`).join('')}
+          <th rowspan="2" style="${th}border-bottom:1px solid var(--bordo);border-left:2px solid var(--bordo);"></th>
+        </tr>
+        <tr style="background:var(--grigio-sfondo);border-bottom:1px solid var(--bordo);">
+          ${MAGAZZINI.map((m,i)=>`<th style="${thN}${i===0?'border-left:2px solid var(--bordo);':'border-left:1px solid var(--bordo);'}">Pz/Sc</th><th style="${thN}">Scorta min.</th><th style="${thN}">Giacenza</th>`).join('')}
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+// ── Modale articolo: sezione magazzini ──
+function artMagsSectionHTML(art){
+  const isEdit=!!art?.id;
+  const tipo=state.tipi.find(t=>t.id===art?.tipo_id);
+  return `<div style="border-top:1px solid var(--bordo);padding-top:14px;display:flex;flex-direction:column;gap:10px;">
+    <div style="font-size:10px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;">Magazzini <span style="color:var(--verde);">*</span></div>
+    ${MAGAZZINI.map(m=>{
+      const r=isEdit?artMagRow(art.id,m.id):null;
+      const allowed=!tipo||tipoMags(tipo).includes(m.id);
+      const on=allowed&&(isEdit?!!r:m.id===state.mag);
+      return `<div id="am-box-${m.id}" style="border:1px solid var(--bordo);border-left:4px solid ${m.color};border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:${on?'#fff':'var(--grigio-sfondo)'};">
+        <label style="display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;color:var(--testo);cursor:pointer;">
+          <input type="checkbox" id="am-en-${m.id}" ${on?'checked':''} ${allowed?'':'disabled'} onchange="artMagToggle('${m.id}')" style="width:16px;height:16px;cursor:pointer;accent-color:${m.color};">
+          ${m.nome}
+          <span id="am-note-${m.id}" style="font-size:11px;font-weight:400;color:var(--arancio);">${allowed?'':'tipo non abilitato in questo magazzino'}</span>
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--grigio-scuro);font-weight:600;">Pezzi per scatola
+            <input type="number" id="am-pz-${m.id}" min="1" value="${r?.pezzi_scatola??''}" placeholder="opzionale" ${on?'':'disabled'} style="${inpStyle()};padding:8px 10px;"></label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--grigio-scuro);font-weight:600;">Scorta minima
+            <input type="number" id="am-sm-${m.id}" min="0" value="${r?.scorta_min??''}" placeholder="opzionale" ${on?'':'disabled'} style="${inpStyle()};padding:8px 10px;"></label>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+function artMagToggle(id){
+  const on=document.getElementById('am-en-'+id).checked;
+  ['am-pz-','am-sm-'].forEach(p=>{ const el=document.getElementById(p+id); if(el) el.disabled=!on; });
+  document.getElementById('am-box-'+id).style.background=on?'#fff':'var(--grigio-sfondo)';
+}
+// Cambiando tipo si aggiornano i magazzini consentiti
+function artTipoChange(){
+  const t=state.tipi.find(x=>x.id===document.getElementById('art-tipo').value);
+  MAGAZZINI.forEach(m=>{
+    const cb=document.getElementById('am-en-'+m.id); if(!cb) return;
+    const allowed=!t||tipoMags(t).includes(m.id);
+    cb.disabled=!allowed;
+    if(!allowed) cb.checked=false;
+    document.getElementById('am-note-'+m.id).textContent=allowed?'':'tipo non abilitato in questo magazzino';
+    artMagToggle(m.id);
+  });
+}
+function leggiArtMags(){
+  return MAGAZZINI.filter(m=>document.getElementById('am-en-'+m.id)?.checked).map(m=>{
+    const pz=parseInt(document.getElementById('am-pz-'+m.id).value);
+    const sm=parseInt(document.getElementById('am-sm-'+m.id).value);
+    return {magazzino:m.id, pezzi_scatola:(!isNaN(pz)&&pz>0)?pz:null, scorta_min:(!isNaN(sm)&&sm>=0)?sm:null};
+  });
+}
+
+// ── Utenti: accesso ai magazzini ──
+function userMagsCell(u){
+  if(u.ruolo==='admin') return `<span style="font-size:11px;color:var(--grigio);">Tutti</span>`;
+  const mine=userMags(u);
+  return `<div style="display:flex;gap:4px;flex-wrap:wrap;">${MAGAZZINI.map(m=>{ const on=mine.includes(m.id); return `<button onclick="toggleUserMag('${u.id}','${m.id}')" title="${on?'Togli':'Dai'} accesso a ${m.nome}"
+    style="border-radius:20px;padding:3px 10px;font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;cursor:pointer;font-family:inherit;
+    border:1px solid ${on?m.color:'var(--bordo)'};background:${on?m.bg:'#fff'};color:${on?'var(--grigio-scuro)':'var(--grigio-chiaro)'};">${on?'✓ ':''}${m.nome}</button>`; }).join('')}</div>`;
+}
+async function toggleUserMag(userId,magId){
+  const u=state.utenti.find(x=>x.id===userId); if(!u) return;
+  const cur=userMags(u);
+  const next=cur.includes(magId)?cur.filter(x=>x!==magId):[...cur,magId];
+  if(!next.length){ showToast('Un operatore deve avere accesso ad almeno un magazzino.','error'); return; }
+  try{ await db.update('magazzino_utenti',{magazzini:next},`id=eq.${userId}`); await loadAll(); showToast('Accessi aggiornati.'); }
+  catch(e){ showToast(e.message,'error'); }
+}
+
+// ── Log: dettaglio con magazzino ──
+function logDettaglio(e){
+  const d=escHtml(e.causale||e.target_user||'—');
+  return e.magazzino?`${magPill(e.magazzino)} <span style="margin-left:4px;">${d}</span>`:d;
+}
+
+// ── Spostamento tra magazzini ──
+function apriSposta(preselectId=null){
+  const l=userMags();
+  if(l.length<2){ showToast('Non hai accesso ad altri magazzini.','error'); return; }
+  const from=state.mag, to=l.find(x=>x!==from);
+  openModal({type:'sposta',from,to,preselectId});
+}
+function invertiSposta(){
+  const m=state.modal; if(m?.type!=='sposta') return;
+  const sel=document.getElementById('mov-art')?.value||null;
+  openModal({type:'sposta',from:m.to,to:m.from,preselectId:sel});
+}
+async function submitSposta(){
+  const errEl=document.getElementById('mov-err'); errEl.innerHTML='';
+  const {from,to}=state.modal;
+  const artId=document.getElementById('mov-art')?.value;
+  if(!artId){ errEl.innerHTML=errBox('Seleziona un articolo.'); return; }
+  const art=artById(artId,from);
+  if(!isEnabled(artId,to)){ errEl.innerHTML=errBox(`Articolo non abilitato in ${magNome(to)}: abilitalo dalla pagina Articoli.`); return; }
+  const noteUt=(document.getElementById('mov-note')?.value||'').trim();
+  const lotti=calcLottiPerArticolo(artId,from);
+  let gruppi=[]; // [{scad, qty, codici:[], isScatola, nScatole}]
+  if(isSerial(art)){
+    const selIds=[...(window._movCodSel||[])];
+    const sel=state.codici.filter(c=>selIds.includes(c.id)&&c.stato==='carico'&&codMag(c)===from);
+    if(!sel.length){ errEl.innerHTML=errBox('Seleziona almeno un codice da spostare.'); return; }
+    const g={}; sel.forEach(c=>{ const k=c.scadenza||NO_SCAD_ISO; (g[k]=g[k]||[]).push(c); });
+    gruppi=Object.entries(g).map(([scad,list])=>({scad,qty:list.length,codici:list,isScatola:false,nScatole:null}));
+  } else {
+    const scad=document.getElementById('mov-scad')?.value||'';
+    const modalita=window._movModalita||'pezzi';
+    const raw=parseInt(document.getElementById('mov-qty')?.value)||0;
+    const qty=modalita==='scatole'?raw*(art.pezzi_scatola||0):raw;
+    if(!scad){ errEl.innerHTML=errBox('Seleziona il lotto da spostare.'); return; }
+    if(qty<=0){ errEl.innerHTML=errBox('Inserisci una quantità valida.'); return; }
+    gruppi=[{scad,qty,codici:[],isScatola:modalita==='scatole',nScatole:modalita==='scatole'?raw:null}];
+  }
+  for(const gr of gruppi){
+    if(gr.qty>(lotti[gr.scad]??0)){ errEl.innerHTML=errBox(`Lotto ${fmtData(gr.scad)}: disponibili in ${magNome(from)} solo ${fmt(lotti[gr.scad]??0)} ${art.um}.`); return; }
+  }
+  const btn=document.getElementById('mov-submit-btn');
+  if(btn){ btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Spostamento…'; }
+  const now=nowStr(), tid=uid();
+  const who={utente:state.utente.username,nome_utente:state.utente.nome_completo};
+  const nota=s=>[noteUt,s].filter(Boolean).join(' · ');
+  const movs=[], aggCodici=[];
+  gruppi.forEach(gr=>{
+    const sId=uid(), cId=uid();
+    const base={articolo_id:artId,quantita:gr.qty,scadenza:gr.scad,is_scatola:gr.isScatola,n_scatole:gr.nScatole,...who,data:now,trasferimento_id:tid};
+    movs.push({...base,id:sId,tipo:'scarico',causale:CAUSALE_INVIO,    note:nota('verso '+magNome(to)),magazzino:from});
+    movs.push({...base,id:cId,tipo:'carico', causale:CAUSALE_RICEZIONE,note:nota('da '+magNome(from)),magazzino:to});
+    if(gr.codici.length) aggCodici.push({ids:gr.codici.map(c=>c.id),cId});
+  });
+  const tot=gruppi.reduce((s,g)=>s+g.qty,0);
+  try{
+    await db.insert('magazzino_movimenti',movs);        // scarico e carico nella stessa richiesta
+    for(const u of aggCodici) await db.update('magazzino_articoli_codici',{magazzino:to,mov_carico_id:u.cId},`id=in.(${u.ids.join(',')})`);
+    await db.insert('magazzino_log_accessi',{id:uid(),tipo:'sposta',utente:state.utente.username,nome_completo:state.utente.nome_completo,
+      articolo_id:artId,quantita:tot,causale:`${magNome(from)} → ${magNome(to)}`,magazzino:from,data:now});
+    await loadAll(); closeModal(); showToast(`Spostati ${fmt(tot)} ${art.um} in ${magNome(to)}.`);
+  }catch(e){ errEl.innerHTML=errBox(e.message); if(btn){ btn.disabled=false; btn.innerHTML='Conferma spostamento'; } }
+}
+
+// Giacenza grezza di un articolo in un magazzino (anche se non più abilitato)
+function giacRaw(artId,mag){
+  return state.movimenti.reduce((s,m)=>m.articolo_id===artId&&movMag(m)===mag?s+(m.tipo==='carico'?m.quantita:-m.quantita):s,0);
+}
+function movTitle(tipo){
+  if(tipo==='sposta') return 'Sposta tra magazzini';
+  return `${tipo==='carico'?'Registra carico':'Registra scarico'}<span style="margin-left:8px;vertical-align:middle;">${magPill(state.mag)}</span>`;
+}
+function spostaBarHTML(){
+  const {from,to}=state.modal;
+  const lbl=t=>`<span style="font-size:10px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;">${t}</span>`;
+  return `<div style="display:flex;align-items:center;gap:10px;background:var(--grigio-sfondo);border:1px solid var(--bordo);border-radius:8px;padding:10px 12px;">
+    <div style="flex:1;display:flex;flex-direction:column;gap:4px;align-items:flex-start;">${lbl('Da')}${magPill(from,false)}</div>
+    <button type="button" onclick="invertiSposta()" title="Inverti direzione" style="border:1px solid var(--bordo);background:#fff;border-radius:50%;width:36px;height:36px;cursor:pointer;font-size:16px;color:var(--grigio-scuro);flex-shrink:0;">⇄</button>
+    <div style="flex:1;display:flex;flex-direction:column;gap:4px;align-items:flex-end;">${lbl('A')}${magPill(to,false)}</div>
+  </div>`;
+}
+function spostaInfoHTML(art){
+  const {from,to}=state.modal;
+  const gf=calcGiacenze(from)[art.id]?.pezzi??0, gt=calcGiacenze(to)[art.id]?.pezzi??0;
+  return `<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${escHtml(art.nome)}</span><span>${magNome(from)}: <b style="color:var(--testo);">${fmt(gf)} ${art.um}</b></span><span>${magNome(to)}: <b style="color:var(--testo);">${fmt(gt)} ${art.um}</b></span></div>`;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1730,7 +2013,7 @@ function filtriHTML(key,onchange){
     </select>
     <select title="Filtra per tipo prodotto" onchange="window._${key}Tipo=this.value;filtroStyle(this);${onchange}" style="${st(!!t)}">
       <option value="" ${!t?'selected':''}>Tutti i tipi</option>
-      ${state.tipi.map(x=>`<option value="${x.id}" ${t===x.id?'selected':''}>${escHtml(x.nome)}</option>`).join('')}
+      ${(key==='art'?state.tipi:state.tipi.filter(x=>tipoMags(x).includes(state.mag))).map(x=>`<option value="${x.id}" ${t===x.id?'selected':''}>${escHtml(x.nome)}</option>`).join('')}
       <option value="_none" ${t==='_none'?'selected':''}>Senza tipo</option>
     </select>`;
 }
@@ -1747,9 +2030,9 @@ function isSerial(art){
   if(!art||!art.tipo_id) return false;
   return !!state.tipi.find(t=>t.id===art.tipo_id)?.codice_singolo;
 }
-function codiciInCarico(artId){
+function codiciInCarico(artId,mag=curMag()){
   return state.codici
-    .filter(c=>c.articolo_id===artId&&c.stato==='carico')
+    .filter(c=>c.articolo_id===artId&&c.stato==='carico'&&codMag(c)===mag)
     .sort((a,b)=>(a.scadenza||NO_SCAD_ISO).localeCompare(b.scadenza||NO_SCAD_ISO)||a.codice.localeCompare(b.codice));
 }
 function findCodice(artId,codice){
@@ -1761,9 +2044,9 @@ function splitCodici(raw){
 }
 
 // Pulsante "#" per aprire l'elenco codici (solo articoli con codice singolo)
-function codiciBtn(a){
+function codiciBtn(a,mag=state.mag){
   if(!isSerial(a)) return '';
-  const n=state.codici.filter(c=>c.articolo_id===a.id&&c.stato==='carico').length;
+  const n=state.codici.filter(c=>c.articolo_id===a.id&&c.stato==='carico'&&(!mag||codMag(c)===mag)).length;
   return `<button onclick="openModal({type:'codici_art',id:'${a.id}'})" title="Codici prodotto (${n} in carico)" style="background:#fff;color:var(--grigio-scuro);border:1px solid var(--bordo);border-radius:6px;padding:6px 9px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;line-height:1;white-space:nowrap;"># ${n}</button>`;
 }
 
@@ -1780,8 +2063,8 @@ function movSerialUI(art){
   if(qtyWrap) qtyWrap.style.display=ser?'none':'';
   if(ser&&scEl) scEl.innerHTML='';
   if(ser) window._movModalita='pezzi';
-  if(scadLabel) scadLabel.style.display=(ser&&tipo==='scarico')?'none':'';
-  if(ser&&tipo==='scarico'&&lottoInfo) lottoInfo.innerHTML='';
+  if(scadLabel) scadLabel.style.display=(ser&&tipo!=='carico')?'none':'';
+  if(ser&&tipo!=='carico'&&lottoInfo) lottoInfo.innerHTML='';
   if(!wrap) return;
   if(!ser){ wrap.innerHTML=''; return; }
   wrap.innerHTML=tipo==='carico'?codiciCaricoHTML():codiciScaricoHTML(art.id);
@@ -1819,7 +2102,7 @@ function addCodiciCarico(raw){
   splitCodici(raw).forEach(c=>{
     if(window._movCodici.some(x=>x.codice.toLowerCase()===c.toLowerCase())){ errs.push(`${escHtml(c)}: già nell'elenco`); return; }
     const ex=findCodice(artId,c);
-    if(ex&&ex.stato==='carico'){ errs.push(`${escHtml(c)}: già in carico`); return; }
+    if(ex&&ex.stato==='carico'){ errs.push(`${escHtml(c)}: già in carico${codMag(ex)!==state.mag?' in '+magNome(codMag(ex)):''}`); return; }
     window._movCodici.push({codice:c, existingId:ex?ex.id:null});
   });
   if(inp){ inp.value=''; inp.focus(); }
@@ -1839,10 +2122,10 @@ function renderCodiciCarico(){
 // ── Scarico: selezione codici ──
 function codiciScaricoHTML(artId){
   const disp=codiciInCarico(artId);
-  if(!disp.length) return `<div style="${_codLbl}"><span>Codici da scaricare <span style="color:var(--verde);">*</span></span>
+  if(!disp.length) return `<div style="${_codLbl}"><span>Codici da ${state.modal?.type==='sposta'?'spostare':'scaricare'} <span style="color:var(--verde);">*</span></span>
     <div style="background:var(--arancio-chiaro);border:1px solid #e67e2244;border-radius:6px;color:var(--arancio);font-size:12px;font-weight:500;padding:10px 14px;">Nessun codice in carico per questo articolo: non è possibile scaricarlo.</div></div>`;
   return `<div style="${_codLbl}">
-    <span>Codici da scaricare <span style="color:var(--verde);">*</span> <span id="cod-count" style="font-weight:400;color:var(--grigio);"></span></span>
+    <span>Codici da ${state.modal?.type==='sposta'?'spostare':'scaricare'} <span style="color:var(--verde);">*</span> <span id="cod-count" style="font-weight:400;color:var(--grigio);"></span></span>
     <input id="cod-q" autocomplete="off" spellcheck="false" placeholder="🔍 Scansiona o filtra i codici…"
       oninput="renderCodPick()" onkeydown="onCodQKey(event)" style="${inpStyle()}">
     <span style="${_codHint}">Spunta i codici, oppure scansiona il codice e premi Invio. Ordinati per scadenza.</span>
@@ -1884,7 +2167,7 @@ function onCodQKey(e){
     e.target.value='';
   } else if(errEl){
     const ex=findCodice(artId,v);
-    errEl.innerHTML=`<div style="background:var(--rosso-chiaro);border:1px solid #c0392b44;border-radius:6px;color:var(--rosso);font-size:11px;font-weight:500;padding:8px 12px;">${escHtml(v)}: ${ex?'già scaricato':'codice non trovato per questo articolo'}</div>`;
+    errEl.innerHTML=`<div style="background:var(--rosso-chiaro);border:1px solid #c0392b44;border-radius:6px;color:var(--rosso);font-size:11px;font-weight:500;padding:8px 12px;">${escHtml(v)}: ${ex?(ex.stato==='carico'?'in carico in '+magNome(codMag(ex)):'già scaricato'):'codice non trovato per questo articolo'}</div>`;
     e.target.select();
   }
   renderCodPick();
@@ -1899,7 +2182,7 @@ async function submitMovimentoSerial(tipo,art){
   const busy=on=>{ if(btn){ btn.disabled=on; btn.innerHTML=on?'<span class="spinner"></span>Salvataggio…':`Conferma ${tipo}`; } };
   const now=nowStr();
   const who={utente:state.utente.username,nome_utente:state.utente.nome_completo};
-  const logRow=(q)=>({id:uid(),tipo,utente:state.utente.username,nome_completo:state.utente.nome_completo,articolo_id:art.id,quantita:q,causale,data:now});
+  const logRow=(q)=>({id:uid(),tipo,utente:state.utente.username,nome_completo:state.utente.nome_completo,articolo_id:art.id,quantita:q,causale,data:now,magazzino:state.mag});
 
   if(tipo==='carico'){
     const codici=window._movCodici||[];
@@ -1908,19 +2191,19 @@ async function submitMovimentoSerial(tipo,art){
     if(!codici.length){ errEl.innerHTML=errBox('Inserisci almeno un codice prodotto.'); return; }
     if(!scad){ errEl.innerHTML=errBox('Inserisci la data di scadenza.'); return; }
     const movId=uid();
-    const nuovi=codici.filter(c=>!c.existingId).map(c=>({id:uid(),articolo_id:art.id,codice:c.codice,scadenza:scad,stato:'carico',mov_carico_id:movId,data_carico:now}));
+    const nuovi=codici.filter(c=>!c.existingId).map(c=>({id:uid(),articolo_id:art.id,codice:c.codice,scadenza:scad,stato:'carico',mov_carico_id:movId,data_carico:now,magazzino:state.mag}));
     const rientri=codici.filter(c=>c.existingId);
     busy(true);
     try{
       if(nuovi.length) await db.insert('magazzino_articoli_codici',nuovi);
       try{
-        await db.insert('magazzino_movimenti',{id:movId,articolo_id:art.id,tipo:'carico',quantita:codici.length,causale,scadenza:scad,note,is_scatola:false,n_scatole:null,...who,data:now});
+        await db.insert('magazzino_movimenti',{id:movId,articolo_id:art.id,tipo:'carico',quantita:codici.length,causale,scadenza:scad,note,is_scatola:false,n_scatole:null,...who,data:now,magazzino:state.mag});
       }catch(e){
         if(nuovi.length) await db.delete('magazzino_articoli_codici',`id=in.(${nuovi.map(n=>n.id).join(',')})`).catch(()=>{});
         throw e;
       }
       if(rientri.length) await db.update('magazzino_articoli_codici',
-        {stato:'carico',scadenza:scad,mov_carico_id:movId,data_carico:now,mov_scarico_id:null,data_scarico:null},
+        {stato:'carico',scadenza:scad,mov_carico_id:movId,data_carico:now,mov_scarico_id:null,data_scarico:null,magazzino:state.mag},
         `id=in.(${rientri.map(r=>r.existingId).join(',')})`);
       await db.insert('magazzino_log_accessi',logRow(codici.length));
       await loadAll(); closeModal(); showToast(`Carico registrato: ${codici.length} ${codici.length===1?'codice':'codici'}.`);
@@ -1946,7 +2229,7 @@ async function submitMovimentoSerial(tipo,art){
   try{
     for(const [scad,list] of Object.entries(gruppi)){
       const movId=uid();
-      await db.insert('magazzino_movimenti',{id:movId,articolo_id:art.id,tipo:'scarico',quantita:list.length,causale,scadenza:scad,note,is_scatola:false,n_scatole:null,...who,data:now});
+      await db.insert('magazzino_movimenti',{id:movId,articolo_id:art.id,tipo:'scarico',quantita:list.length,causale,scadenza:scad,note,is_scatola:false,n_scatole:null,...who,data:now,magazzino:state.mag});
       await db.update('magazzino_articoli_codici',{stato:'scaricato',mov_scarico_id:movId,data_scarico:now},`id=in.(${list.map(c=>c.id).join(',')})`);
       await db.insert('magazzino_log_accessi',logRow(list.length));
     }
@@ -1992,7 +2275,7 @@ function updateCodModal(id){
         <div style="font-size:10px;color:var(--grigio);margin-top:2px;">Carico ${escHtml(c.data_carico||'—')}${c.data_scarico?' · Scarico '+escHtml(c.data_scarico):''}</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;white-space:nowrap;">
-        ${c.stato==='carico'?pill('In carico','var(--verde)'):pill('Scaricato','var(--grigio)')}
+        <span style="display:flex;gap:4px;">${c.stato==='carico'?magPill(codMag(c)):''}${c.stato==='carico'?pill('In carico','var(--verde)'):pill('Scaricato','var(--grigio)')}</span>
         <span style="font-size:11px;color:var(--grigio);">Scad. ${fmtData(c.scadenza||NO_SCAD_ISO)}</span>
       </div>
     </div>`).join('')
@@ -2063,6 +2346,13 @@ function tipoModal(tipo){
           <span style="display:block;font-size:11px;color:var(--grigio);font-weight:400;margin-top:3px;">Ogni pezzo ha un proprio codice univoco: nel carico si inseriscono i codici, nello scarico vanno selezionati.</span>
         </span>
       </label>
+      <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
+        <span>Abilitato nei magazzini <span style="color:var(--verde);">*</span></span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${MAGAZZINI.map(m=>{ const on=tipo?tipoMags(tipo).includes(m.id):true; return `<label style="flex:1;min-width:140px;display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--bordo);border-left:4px solid ${m.color};border-radius:6px;cursor:pointer;font-weight:600;"><input type="checkbox" id="tipo-mag-${m.id}" ${on?'checked':''} style="width:15px;height:15px;accent-color:${m.color};cursor:pointer;">${m.nome}</label>`; }).join('')}
+        </div>
+        <span style="font-size:11px;color:var(--grigio);font-weight:400;">Gli articoli di questo tipo potranno essere abilitati solo nei magazzini selezionati.</span>
+      </div>
       <div id="tipo-err"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
         <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
@@ -2076,11 +2366,18 @@ async function submitTipo(existingId){
   const nome=document.getElementById('tipo-nome').value.trim();
   const codice_singolo=document.getElementById('tipo-cs').checked;
   if(!nome){ errEl.innerHTML=errBox('Il nome è obbligatorio.'); return; }
+  const magazzini=MAGAZZINI.filter(m=>document.getElementById('tipo-mag-'+m.id)?.checked).map(m=>m.id);
+  if(!magazzini.length){ errEl.innerHTML=errBox('Seleziona almeno un magazzino.'); return; }
+  if(existingId){
+    const blocchi=MAGAZZINI.filter(m=>!magazzini.includes(m.id))
+      .map(m=>({m,n:state.articoli.filter(a=>a.tipo_id===existingId&&isEnabled(a.id,m.id)).length})).filter(x=>x.n>0);
+    if(blocchi.length){ errEl.innerHTML=errBox(blocchi.map(x=>`${x.n} articol${x.n===1?'o':'i'} di questo tipo ${x.n===1?'è abilitato':'sono abilitati'} in ${x.m.nome}: toglilo prima da quel magazzino nella pagina Articoli.`).join('<br>')); return; }
+  }
   const dup=state.tipi.find(t=>t.nome.toLowerCase()===nome.toLowerCase()&&t.id!==existingId);
   if(dup){ errEl.innerHTML=errBox('Tipo già esistente.'); return; }
   try{
-    if(existingId) await db.update('magazzino_articoli_tipo',{nome,codice_singolo},`id=eq.${existingId}`);
-    else await db.insert('magazzino_articoli_tipo',{id:uid(),nome,codice_singolo});
+    if(existingId) await db.update('magazzino_articoli_tipo',{nome,codice_singolo,magazzini},`id=eq.${existingId}`);
+    else await db.insert('magazzino_articoli_tipo',{id:uid(),nome,codice_singolo,magazzini});
     await loadAll(); closeModal(); showToast(existingId?'Tipo aggiornato.':'Tipo creato.');
   }catch(e){ errEl.innerHTML=errBox(e.message); }
 }
@@ -2108,7 +2405,7 @@ function articoloModal(art){
         </select>
       </label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Tipo prodotto
-        <select id="art-tipo" style="${inpStyle()}">
+        <select id="art-tipo" onchange="artTipoChange()" style="${inpStyle()}">
           <option value="">— nessuno —</option>
           ${state.tipi.map(t=>`<option value="${t.id}" ${art?.tipo_id===t.id?'selected':''}>${t.nome}</option>`).join('')}
         </select>
@@ -2121,11 +2418,7 @@ function articoloModal(art){
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Note
         <textarea id="art-note" rows="4" placeholder="Note libere sull'articolo…" style="${inpStyle()};resize:vertical;min-height:80px;line-height:1.4;">${escHtml((state.articoli.find(x=>x.id===art?.id)||art)?.note||'')}</textarea>
       </label>
-      <div style="border-top:1px solid var(--bordo);padding-top:14px;display:flex;flex-direction:column;gap:12px;">
-        <div style="font-size:10px;color:var(--grigio);font-weight:700;letter-spacing:1px;text-transform:uppercase;">Scatola &amp; Scorta</div>
-        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Pezzi per scatola (opzionale)<input type="number" id="art-pzsc" min="1" value="${art?.pezzi_scatola||''}" placeholder="es. 100" style="${inpStyle()}"></label>
-        <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Scorta minima (opzionale)<input type="number" id="art-scmin" min="0" value="${art?.scorta_min||''}" placeholder="es. 50" style="${inpStyle()}"></label>
-      </div>
+      ${artMagsSectionHTML(art)}
       <div id="art-err"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
         <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
@@ -2145,18 +2438,27 @@ async function submitArticolo(existingId){
     const dup=state.articoli.find(a=>a.codice===codice&&a.id!==existingId);
     if(dup){ errEl.innerHTML=errBox('Codice già esistente.'); return; }
   }
-  const pzscVal = document.getElementById('art-pzsc').value.trim();
-  const scminVal = document.getElementById('art-scmin').value.trim();
+  const tipo_id=document.getElementById('art-tipo').value||null;
+  const mags=leggiArtMags();
+  if(!mags.length){ errEl.innerHTML=errBox("Abilita l'articolo in almeno un magazzino."); return; }
+  const tipoSel=state.tipi.find(t=>t.id===tipo_id);
+  const nonAmm=tipoSel?mags.filter(x=>!tipoMags(tipoSel).includes(x.magazzino)):[];
+  if(nonAmm.length){ errEl.innerHTML=errBox(`Il tipo "${escHtml(tipoSel.nome)}" non è abilitato in ${nonAmm.map(x=>magNome(x.magazzino)).join(' e ')}.`); return; }
+  if(existingId){
+    for(const id of artMagsOf(existingId).filter(id=>!mags.some(x=>x.magazzino===id))){
+      const pz=giacRaw(existingId,id);
+      if(pz!==0){ errEl.innerHTML=errBox(`Non puoi togliere ${magNome(id)}: l'articolo ha ancora ${fmt(pz)} pezzi in quel magazzino. Scaricali o spostali prima.`); return; }
+    }
+  }
   const art={
     id:existingId||uid(), codice,
     barcode:document.getElementById('art-barcode').value.trim()||null,
     nome, um:document.getElementById('art-um').value,
-    tipo_id:document.getElementById('art-tipo').value||null,
+    tipo_id,
     frigo:document.getElementById('art-frigo').checked,
     note:document.getElementById('art-note').value.trim()||null,
     flag:document.getElementById('art-flag').value||null,
-    pezzi_scatola: pzscVal!=='' ? parseInt(pzscVal) : null,
-    scorta_min:    scminVal!=='' ? parseInt(scminVal) : null,
+    mags,
     created_at:nowStr()
   };
   try{ await saveArticolo(art,!existingId); closeModal(); showToast(existingId?'Articolo aggiornato.':'Articolo creato.'); }
@@ -2171,8 +2473,15 @@ function nuovoUtenteModal(){
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Username <span style="color:var(--verde);">*</span></span><input id="nu-user" placeholder="es. mrossi" style="${inpStyle()}"></label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Password temporanea <span style="color:var(--verde);">*</span></span><input type="password" id="nu-pass" placeholder="minimo 6 caratteri" style="${inpStyle()}"></label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Ruolo
-        <select id="nu-ruolo" style="${inpStyle()}"><option value="operatore">Operatore (solo carico/scarico)</option><option value="admin">Amministratore (accesso completo)</option></select>
+        <select id="nu-ruolo" onchange="document.getElementById('nu-mags').style.display=this.value==='admin'?'none':'flex';" style="${inpStyle()}"><option value="operatore">Operatore (solo carico/scarico)</option><option value="admin">Amministratore (accesso completo)</option></select>
       </label>
+      <div id="nu-mags" style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">
+        <span>Accesso ai magazzini <span style="color:var(--verde);">*</span></span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${MAGAZZINI.map(m=>`<label style="flex:1;min-width:140px;display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--bordo);border-left:4px solid ${m.color};border-radius:6px;cursor:pointer;font-weight:600;"><input type="checkbox" id="nu-mag-${m.id}" ${m.id===state.mag?'checked':''} style="width:15px;height:15px;accent-color:${m.color};cursor:pointer;">${m.nome}</label>`).join('')}
+        </div>
+        <span style="font-size:11px;color:var(--grigio);font-weight:400;">Gli amministratori accedono sempre a tutti i magazzini.</span>
+      </div>
       <div id="nu-err"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
         <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
@@ -2190,8 +2499,10 @@ async function submitNuovoUtente(){
   if(!nome||!user||!pass){ errEl.innerHTML=errBox('Tutti i campi sono obbligatori.'); return; }
   if(pass.length<6){ errEl.innerHTML=errBox('Password minimo 6 caratteri.'); return; }
   if(state.utenti.find(u=>u.username===user)){ errEl.innerHTML=errBox('Username già esistente.'); return; }
+  const magazzini=ruolo==='admin'?MAGAZZINI.map(m=>m.id):MAGAZZINI.filter(m=>document.getElementById('nu-mag-'+m.id)?.checked).map(m=>m.id);
+  if(!magazzini.length){ errEl.innerHTML=errBox('Seleziona almeno un magazzino.'); return; }
   const hash=await sha256(pass);
-  try{ await saveUtente({username:user,password_hash:hash,nome_completo:nome,ruolo},true); closeModal(); showToast('Utente creato.'); }
+  try{ await saveUtente({username:user,password_hash:hash,nome_completo:nome,ruolo,magazzini},true); closeModal(); showToast('Utente creato.'); }
   catch(e){ errEl.innerHTML=errBox(e.message); }
 }
 
