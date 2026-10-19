@@ -1,0 +1,12 @@
+# Medical Group — il repository è pubblico (GitHub Pages): si pubblicano SOLO i file dell'applicazione.
+# Tutto il resto (note .txt con credenziali, _materiale, supabase, script SQL, dati) resta solo sul PC.
+*
+!.gitignore
+!*.html
+!favicon.svg
+!favicon-*.png
+!icon-*.png
+!apple-touch-icon.png
+!logo.png
+!manifest.json
+!CNAME
