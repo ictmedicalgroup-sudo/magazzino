@@ -164,7 +164,7 @@ async function loadAll(){
     db.selectAll('magazzino_articoli','order=codice.asc,id.asc'),
     db.selectAll('magazzino_movimenti','order=id.asc'),
     db.select('magazzino_utenti','order=created_at.asc'),
-    db.select('magazzino_log_accessi','order=data.desc&limit=500'),
+    db.select('magazzino_log_accessi','tipo=not.in.(carico,scarico,sposta)&order=ts.desc&limit=1000'),
     db.select('magazzino_articoli_tipo','order=nome.asc'),
   ]);
   // Codici singoli: se la tabella non esiste ancora l'app continua a funzionare
@@ -214,16 +214,22 @@ async function doSetup(nome,username,pass){
 async function doLogin(username,pass){
   const utenti = await db.select('magazzino_utenti',`username=eq.${username.toLowerCase().trim()}`);
   const u = utenti[0];
-  if(!u||!u.attivo) throw new Error('Utente non trovato o disabilitato.');
+  if(!u||!u.attivo){
+    await logAttivita('login_fallito',{utente:{username:username.toLowerCase().trim(),nome_completo:u?.nome_completo||null},dettaglio:u?'Utente disabilitato':'Utente inesistente'});
+    throw new Error('Utente non trovato o disabilitato.');
+  }
   const hash = await sha256(pass);
-  if(hash!==u.password_hash) throw new Error('Password errata.');
-  await db.insert('magazzino_log_accessi',{id:uid(),tipo:'login',utente:u.username,nome_completo:u.nome_completo,data:nowStr()});
+  if(hash!==u.password_hash){
+    await logAttivita('login_fallito',{utente:u,dettaglio:'Password errata'});
+    throw new Error('Password errata.');
+  }
+  await logAttivita('login',{utente:u});
   state.utente=u; state.phase='app'; state.mag=userMags(u)[0];
   await loadAll();
 }
 
 async function doLogout(){
-  await db.insert('magazzino_log_accessi',{id:uid(),tipo:'logout',utente:state.utente.username,nome_completo:state.utente.nome_completo,data:nowStr()});
+  await logAttivita('logout');
   state.utente=null; state.phase='login'; state.tab='Giacenze';
   render();
 }
@@ -234,9 +240,6 @@ async function doCarico(m){
     is_scatola:m.isScatola||false,n_scatole:m.nScatole||null,
     utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr(),magazzino:curMag()};
   await db.insert('magazzino_movimenti',mov);
-  await db.insert('magazzino_log_accessi',{id:uid(),tipo:'carico',utente:state.utente.username,
-    nome_completo:state.utente.nome_completo,articolo_id:m.articoloId,
-    quantita:m.quantita,causale:m.causale,data:nowStr(),magazzino:curMag()});
   await loadAll();
 }
 
@@ -246,9 +249,6 @@ async function doScarico(m){
     is_scatola:m.isScatola||false,n_scatole:m.nScatole||null,
     utente:state.utente.username,nome_utente:state.utente.nome_completo,data:nowStr(),magazzino:curMag()};
   await db.insert('magazzino_movimenti',mov);
-  await db.insert('magazzino_log_accessi',{id:uid(),tipo:'scarico',utente:state.utente.username,
-    nome_completo:state.utente.nome_completo,articolo_id:m.articoloId,
-    quantita:m.quantita,causale:m.causale,data:nowStr(),magazzino:curMag()});
   await loadAll();
 }
 
@@ -277,11 +277,16 @@ async function saveArticolo(art, isNew){
 }
 
 async function deleteArticolo(id){
+  const snap=snapArticolo(id);
+  const nMov=state.movimenti.filter(m=>m.articolo_id===id).length;
+  const nCod=state.codici.filter(c=>c.articolo_id===id).length;
   const img=state.articoli.find(a=>a.id===id)?.immagine_id;
   if(img) imgApi('elimina',{id:img}).catch(e=>console.warn('Immagine non eliminata:',e.message));
   await db.delete('magazzino_articoli_codici',`articolo_id=eq.${id}`).catch(()=>{});
   await db.delete('magazzino_movimenti',`articolo_id=eq.${id}`);
   await db.delete('magazzino_articoli',`id=eq.${id}`);
+  if(snap) await logAttivita('articolo_eliminato',{oggetto:oggArt(snap),entita:'articolo',entita_id:id,
+    dettaglio:[`Magazzini: ${snap.mags.map(x=>magNome(x.magazzino)).join(', ')||'—'}`,`Movimenti eliminati: ${nMov}`,nCod?`Codici prodotto eliminati: ${nCod}`:'',snap.immagine_id?'Immagine eliminata':''].filter(Boolean).join(' · ')});
   await loadAll();
 }
 
@@ -360,6 +365,7 @@ function render(){
   app.innerHTML=mainHTML();
   bindMain();
   if(state.modal?.type==='codici_art') updateCodModal(state.modal.id);
+  if(state.tab==='Log') updateLogTable();
   if((state.modal?.type==='nuovo_art'||state.modal?.type==='edit_art')&&window._artImg) artImgRender();
   ensureImgUrls();
 }
@@ -1008,7 +1014,9 @@ function renderTipi(){
 function confirmDeleteTipo(id, used){
   if(used>0){ showToast(`Impossibile eliminare: utilizzato da ${used} articol${used===1?'o':'i'}.`,'error'); return; }
   if(!confirm('Eliminare questo tipo?')) return;
+  const t=state.tipi.find(x=>x.id===id);
   db.delete('magazzino_articoli_tipo',`id=eq.${id}`)
+    .then(()=>logAttivita('tipo_eliminato',{oggetto:t?.nome||id,entita:'tipo',entita_id:id}))
     .then(()=>loadAll())
     .then(()=>showToast('Tipo eliminato.'))
     .catch(e=>showToast(e.message,'error'));
@@ -1046,131 +1054,16 @@ function renderUtenti(){
 
 async function toggleUtente(id,attivo){
   await db.update('magazzino_utenti',{attivo:!attivo},`id=eq.${id}`);
+  const u=state.utenti.find(x=>x.id===id);
+  await logAttivita(attivo?'utente_disabilitato':'utente_riabilitato',{oggetto:oggUser(u),entita:'utente',entita_id:id});
   await loadAll(); showToast('Utente aggiornato.');
 }
 
 // ════════════════════════════════════════════════════════════════
 // TAB: LOG
 // ════════════════════════════════════════════════════════════════
-function renderLog(){
-  const search=(window._logSearch||'').toLowerCase();
-  const dal=window._logDal||''; const al=window._logAl||'';
-  const PER_PAG=10;
-  if(!window._logPag) window._logPag=1;
-  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password',sposta:'Spostamento'};
-  const COLOR={login:'var(--verde)',logout:'var(--grigio)',carico:'var(--verde)',scarico:'var(--rosso)',crea_utente:'var(--arancio)',reset_password:'var(--arancio)',sposta:'#3E9E9A'};
-  const parseD=str=>{ if(!str) return null; const [dp]=str.split(','); const [d,m,y]=dp.trim().split('/'); return new Date(`${y}-${m}-${d}`); };
-  const dalD=dal?new Date(dal):null;
-  const alD =al ?new Date(al) :null; if(alD) alD.setHours(23,59,59);
-  const filtered=state.logEntries.filter(e=>{
-    const q=search; const m=!q||e.nome_completo?.toLowerCase().includes(q)||e.utente?.toLowerCase().includes(q)||(LABEL[e.tipo]||e.tipo).toLowerCase().includes(q);
-    const d=parseD(e.data); const ok=((!dalD||!d||d>=dalD)&&(!alD||!d||d<=alD));
-    return m&&ok;
-  });
-  const totP=Math.max(1,Math.ceil(filtered.length/PER_PAG));
-  const pag=Math.min(window._logPag,totP);
-  const rows=filtered.slice((pag-1)*PER_PAG,pag*PER_PAG);
-  const pagBtn=(p,label,dis)=>`<button onclick="window._logPag=${p};render();" ${dis?'disabled':''} style="padding:6px 10px;border-radius:6px;border:1px solid ${dis?'var(--bordo)':'var(--bordo)'};background:transparent;color:${dis?'var(--grigio-chiaro)':'var(--grigio)'};cursor:${dis?'not-allowed':'pointer'};font-family:inherit;font-size:12px;">${label}</button>`;
-  const pageNums=Array.from({length:totP},(_,i)=>i+1).filter(p=>p===1||p===totP||Math.abs(p-pag)<=1)
-    .reduce((acc,p,i,arr)=>{ if(i>0&&p-arr[i-1]>1) acc.push('…'); acc.push(p); return acc; },[])
-    .map(p=>p==='…'?`<span style="color:var(--grigio);padding:0 4px;">…</span>`:`<button onclick="window._logPag=${p};render();" style="width:32px;height:32px;border-radius:6px;border:1px solid ${p===pag?'var(--verde)':'var(--bordo)'};background:${p===pag?'var(--verde)':'transparent'};color:${p===pag?'#fff':'var(--grigio)'};cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;">${p}</button>`).join('');
-  return `
-    <div>
-      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end;">
-        <input id="log-search-box" placeholder="🔍  Cerca utente o tipo…" value="${window._logSearch||''}" oninput="window._logSearch=this.value;window._logPag=1;updateLogTable();" style="${inpStyle()};max-width:220px;">
-        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--grigio-scuro);font-weight:600;">Dal<input type="date" value="${dal}" onchange="window._logDal=this.value;window._logPag=1;updateLogTable();" style="${inpStyle()};max-width:150px;padding:8px 10px;"></div>
-        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--grigio-scuro);font-weight:600;">Al<input type="date" value="${al}" onchange="window._logAl=this.value;window._logPag=1;updateLogTable();" style="${inpStyle()};max-width:150px;padding:8px 10px;"></div>
-        <button onclick="window._logSearch='';window._logDal='';window._logAl='';window._logPag=1;var el=document.getElementById('log-search-box');if(el)el.value='';updateLogTable();" style="${btnStyle('ghost',true)}">✕ Reset</button>
-        <button onclick="exportLog()" style="${btnStyle('ghost',true)};margin-left:auto;">⬇ CSV</button>
-      </div>
-      <div id="log-counter" style="font-size:11px;color:var(--grigio);margin-bottom:10px;">${filtered.length} risultati — pagina ${pag} di ${totP}</div>
-      <div id="log-table-wrap">
-      ${rows.length===0?'<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun accesso registrato.</div>':`
-        <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
-          <table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-              ${['Data/Ora','Utente','Tipo','Dettaglio'].map(h=>`<th style="text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
-            </tr></thead>
-            <tbody>${rows.map(e=>`
-              <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
-                <td style="padding:10px 14px;color:var(--grigio);font-size:11px;white-space:nowrap;">${e.data}</td>
-                <td style="padding:10px 14px;"><div style="font-weight:600;font-size:13px;">${e.nome_completo||'—'}</div><div style="font-size:11px;color:var(--grigio);">@${e.utente||''}</div></td>
-                <td style="padding:10px 14px;">${pill(LABEL[e.tipo]||e.tipo,COLOR[e.tipo]||'var(--grigio)')}</td>
-                <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${logDettaglio(e)}</td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-        </div>
-        ${totP>1?`<div style="display:flex;justify-content:center;align-items:center;gap:6px;margin-top:16px;">${pagBtn(1,'«',pag<=1)}${pagBtn(pag-1,'‹',pag<=1)}${pageNums}${pagBtn(pag+1,'›',pag>=totP)}${pagBtn(totP,'»',pag>=totP)}</div>`:''}
-      `}
-      </div>
-    </div>`;
-}
 
-function updateLogTable(){
-  // Aggiorna solo il contenuto del log senza ricostruire i filtri (preserva il focus)
-  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password',sposta:'Spostamento'};
-  const COLOR={login:'var(--verde)',logout:'var(--grigio)',carico:'var(--verde)',scarico:'var(--rosso)',crea_utente:'var(--arancio)',reset_password:'var(--arancio)',sposta:'#3E9E9A'};
-  const PER_PAG=10;
-  const search=(window._logSearch||'').toLowerCase();
-  const dal=window._logDal||''; const al=window._logAl||'';
-  const parseD=str=>{ if(!str) return null; const [dp]=str.split(','); const [d,m,y]=dp.trim().split('/'); return new Date(`${y}-${m}-${d}`); };
-  const dalD=dal?new Date(dal):null;
-  const alD=al?new Date(al):null; if(alD) alD.setHours(23,59,59);
-  const filtered=state.logEntries.filter(e=>{
-    const q=search;
-    const m=!q||e.nome_completo?.toLowerCase().includes(q)||e.utente?.toLowerCase().includes(q)||(LABEL[e.tipo]||e.tipo).toLowerCase().includes(q);
-    const d=parseD(e.data);
-    return m&&(!dalD||!d||d>=dalD)&&(!alD||!d||d<=alD);
-  });
-  const totP=Math.max(1,Math.ceil(filtered.length/PER_PAG));
-  const pag=Math.min(window._logPag||1,totP);
-  const rows=filtered.slice((pag-1)*PER_PAG,pag*PER_PAG);
 
-  // Aggiorna contatore
-  const counter=document.getElementById('log-counter');
-  if(counter) counter.textContent=`${filtered.length} risultati — pagina ${pag} di ${totP}`;
-
-  // Aggiorna tabella
-  const wrap=document.getElementById('log-table-wrap');
-  if(!wrap){ render(); return; }
-
-  const pagBtn=(p,label,dis)=>`<button onclick="window._logPag=${p};updateLogTable();" ${dis?'disabled':''} style="padding:6px 10px;border-radius:6px;border:1px solid var(--bordo);background:transparent;color:${dis?'var(--grigio-chiaro)':'var(--grigio)'};cursor:${dis?'not-allowed':'pointer'};font-family:inherit;font-size:12px;">${label}</button>`;
-  const pageNums=Array.from({length:totP},(_,i)=>i+1)
-    .filter(p=>p===1||p===totP||Math.abs(p-pag)<=1)
-    .reduce((acc,p,i,arr)=>{ if(i>0&&p-arr[i-1]>1) acc.push('…'); acc.push(p); return acc; },[])
-    .map(p=>p==='…'?`<span style="color:var(--grigio);padding:0 4px;">…</span>`
-      :`<button onclick="window._logPag=${p};updateLogTable();" style="width:32px;height:32px;border-radius:6px;border:1px solid ${p===pag?'var(--verde)':'var(--bordo)'};background:${p===pag?'var(--verde)':'transparent'};color:${p===pag?'#fff':'var(--grigio)'};cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;">${p}</button>`
-    ).join('');
-
-  if(rows.length===0){
-    wrap.innerHTML='<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessun accesso registrato per i criteri selezionati.</div>';
-    return;
-  }
-  wrap.innerHTML=`
-    <div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
-      <table style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
-          ${['Data/Ora','Utente','Tipo','Dettaglio'].map(h=>`<th style="text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;">${h}</th>`).join('')}
-        </tr></thead>
-        <tbody>${rows.map(e=>`
-          <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);">
-            <td style="padding:10px 14px;color:var(--grigio);font-size:11px;white-space:nowrap;">${e.data}</td>
-            <td style="padding:10px 14px;"><div style="font-weight:600;font-size:13px;">${e.nome_completo||'—'}</div><div style="font-size:11px;color:var(--grigio);">@${e.utente||''}</div></td>
-            <td style="padding:10px 14px;">${pill(LABEL[e.tipo]||e.tipo,COLOR[e.tipo]||'var(--grigio)')}</td>
-            <td style="padding:10px 14px;color:var(--grigio);font-size:12px;">${logDettaglio(e)}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>
-    ${totP>1?`<div style="display:flex;justify-content:center;align-items:center;gap:6px;margin-top:16px;">${pagBtn(1,'«',pag<=1)}${pagBtn(pag-1,'‹',pag<=1)}${pageNums}${pagBtn(pag+1,'›',pag>=totP)}${pagBtn(totP,'»',pag>=totP)}</div>`:''}`;
-}
-
-function exportLog(){
-  const LABEL={login:'Login',logout:'Logout',carico:'Carico',scarico:'Scarico',crea_utente:'Nuovo utente',reset_password:'Reset password',sposta:'Spostamento'};
-  exportCSV(state.logEntries.map(e=>({data:e.data,utente:e.nome_completo||e.utente,tipo:LABEL[e.tipo]||e.tipo,dettaglio:(e.magazzino?magNome(e.magazzino)+' · ':'')+(e.causale||e.target_user||'')})),
-    [{key:'data',label:'Data/Ora'},{key:'utente',label:'Utente'},{key:'tipo',label:'Tipo'},{key:'dettaglio',label:'Dettaglio'}],'log_accessi.csv');
-}
 
 // ════════════════════════════════════════════════════════════════
 // MODALS
@@ -1801,7 +1694,11 @@ async function toggleUserMag(userId,magId){
   const cur=userMags(u);
   const next=cur.includes(magId)?cur.filter(x=>x!==magId):[...cur,magId];
   if(!next.length){ showToast('Un operatore deve avere accesso ad almeno un magazzino.','error'); return; }
-  try{ await db.update('magazzino_utenti',{magazzini:next},`id=eq.${userId}`); await loadAll(); showToast('Accessi aggiornati.'); }
+  try{
+    await db.update('magazzino_utenti',{magazzini:next},`id=eq.${userId}`);
+    await logAttivita('utente_modificato',{oggetto:oggUser(u),entita:'utente',entita_id:userId,dettaglio:`Accesso ${/^[aeiou]/i.test(magNome(magId))?'ad':'a'} ${magNome(magId)} ${cur.includes(magId)?'tolto':'concesso'}`});
+    await loadAll(); showToast('Accessi aggiornati.');
+  }
   catch(e){ showToast(e.message,'error'); }
 }
 
@@ -1868,8 +1765,6 @@ async function submitSposta(){
   try{
     await db.insert('magazzino_movimenti',movs);        // scarico e carico nella stessa richiesta
     for(const u of aggCodici) await db.update('magazzino_articoli_codici',{magazzino:to,mov_carico_id:u.cId},`id=in.(${u.ids.join(',')})`);
-    await db.insert('magazzino_log_accessi',{id:uid(),tipo:'sposta',utente:state.utente.username,nome_completo:state.utente.nome_completo,
-      articolo_id:artId,quantita:tot,causale:`${magNome(from)} → ${magNome(to)}`,magazzino:from,data:now});
     await loadAll(); closeModal(); showToast(`Spostati ${fmt(tot)} ${art.um} in ${magNome(to)}.`);
   }catch(e){ errEl.innerHTML=errBox(e.message); if(btn){ btn.disabled=false; btn.innerHTML='Conferma spostamento'; } }
 }
@@ -2064,6 +1959,159 @@ async function syncArtImage(artId,codice){
 }
 
 // ════════════════════════════════════════════════════════════════
+// REGISTRO ATTIVITÀ (tabella magazzino_log_accessi)
+// Registra accessi e modifiche amministrative. Carichi, scarichi e
+// spostamenti stanno nella pagina Movimenti e non vengono più duplicati qui.
+// ════════════════════════════════════════════════════════════════
+const LOG_TIPI = {
+  login:               {l:'Accesso',              c:'var(--verde)',  cat:'accessi'},
+  logout:              {l:'Uscita',               c:'var(--grigio)', cat:'accessi'},
+  login_fallito:       {l:'Accesso fallito',      c:'var(--rosso)',  cat:'accessi'},
+  articolo_creato:     {l:'Articolo creato',      c:'var(--verde)',  cat:'articoli'},
+  articolo_modificato: {l:'Articolo modificato',  c:'#5B8DB8',       cat:'articoli'},
+  articolo_eliminato:  {l:'Articolo eliminato',   c:'var(--rosso)',  cat:'articoli'},
+  tipo_creato:         {l:'Tipo creato',          c:'var(--verde)',  cat:'tipi'},
+  tipo_modificato:     {l:'Tipo modificato',      c:'#5B8DB8',       cat:'tipi'},
+  tipo_eliminato:      {l:'Tipo eliminato',       c:'var(--rosso)',  cat:'tipi'},
+  utente_creato:       {l:'Utente creato',        c:'var(--verde)',  cat:'utenti'},
+  crea_utente:         {l:'Utente creato',        c:'var(--verde)',  cat:'utenti'},
+  utente_modificato:   {l:'Utente modificato',    c:'#5B8DB8',       cat:'utenti'},
+  utente_disabilitato: {l:'Utente disabilitato',  c:'var(--rosso)',  cat:'utenti'},
+  utente_riabilitato:  {l:'Utente riabilitato',   c:'var(--verde)',  cat:'utenti'},
+  reset_password:      {l:'Reset password',       c:'var(--arancio)',cat:'utenti'},
+};
+const LOG_CAT = {accessi:'Accessi', articoli:'Articoli', tipi:'Tipi', utenti:'Utenti'};
+const LOG_ESCLUSI = ['carico','scarico','sposta'];   // righe storiche, ora in Movimenti
+
+// Registra un evento. Un errore di registrazione non blocca mai l'operazione.
+async function logAttivita(tipo,{oggetto=null,entita=null,entita_id=null,dettaglio=null,magazzino=null,target_user=null,utente=state.utente}={}){
+  const row={id:uid(),tipo,utente:utente?.username||null,nome_completo:utente?.nome_completo||null,
+    oggetto,entita,entita_id,dettaglio:dettaglio||null,magazzino,target_user,data:nowStr()};
+  try{
+    const ins=await db.insert('magazzino_log_accessi',row);
+    if(state.logEntries&&ins?.[0]) state.logEntries.unshift(ins[0]);
+  }catch(e){ console.warn('Registro non aggiornato:',e.message); }
+}
+const oggArt  = a => a?`${a.codice} · ${a.nome}`:'';
+const oggUser = u => u?`${u.nome_completo} (@${u.username})`:'';
+const siNo    = v => v?'sì':'no';
+const vuoto   = v => (v===null||v===undefined||v==='')?'—':String(v);
+const flagLbl = f => FLAGS[f]?.label||'Nessuno';
+
+// Fotografia di un articolo (anagrafica + impostazioni per magazzino) per il confronto
+function snapArticolo(id){
+  const a=state.articoli.find(x=>x.id===id); if(!a) return null;
+  return {...a, mags:MAGAZZINI.map(m=>artMagRow(id,m.id)).filter(Boolean).map(r=>({magazzino:r.magazzino,pezzi_scatola:r.pezzi_scatola??null,scorta_min:r.scorta_min??null}))};
+}
+// Elenco leggibile delle differenze tra due versioni dell'articolo
+function diffArticolo(p,n){
+  const d=[];
+  const ch=(lbl,a,b,f=vuoto)=>{ if((a??null)!==(b??null)&&String(a??'')!==String(b??'')) d.push(`${lbl}: ${f(a)} → ${f(b)}`); };
+  ch('Descrizione',p.nome,n.nome);
+  ch('Barcode',p.barcode,n.barcode);
+  ch('U.M.',p.um,n.um);
+  ch('Tipo',p.tipo_id,n.tipo_id,id=>id?tipoNome(id):'—');
+  if(!!p.frigo!==!!n.frigo) d.push(`Frigo: ${siNo(p.frigo)} → ${siNo(n.frigo)}`);
+  ch('Colore riga',p.flag||null,n.flag||null,flagLbl);
+  if((p.note||'')!==(n.note||'')) d.push(!p.note?'Note aggiunte':!n.note?'Note rimosse':'Note modificate');
+  MAGAZZINI.forEach(m=>{
+    const a=p.mags.find(x=>x.magazzino===m.id), b=(n.mags||[]).find(x=>x.magazzino===m.id);
+    if(!a&&b) d.push(`Abilitato in ${m.nome}`);
+    else if(a&&!b) d.push(`Disabilitato in ${m.nome}`);
+    else if(a&&b){
+      ch(`Pz/sc ${m.nome}`,a.pezzi_scatola,b.pezzi_scatola);
+      ch(`Scorta min. ${m.nome}`,a.scorta_min,b.scorta_min);
+    }
+  });
+  return d;
+}
+function descriviNuovoArticolo(n){
+  const d=[`Magazzini: ${(n.mags||[]).map(x=>magNome(x.magazzino)).join(', ')||'—'}`];
+  if(n.tipo_id) d.push(`Tipo: ${tipoNome(n.tipo_id)}`);
+  if(n.frigo) d.push('Frigo');
+  if(n.flag) d.push(`Colore riga: ${flagLbl(n.flag)}`);
+  (n.mags||[]).forEach(x=>{ if(x.scorta_min!=null) d.push(`Scorta min. ${magNome(x.magazzino)}: ${x.scorta_min}`); });
+  return d;
+}
+
+// ── Pagina ──
+const logTs = e => e.ts?new Date(e.ts):new Date(parseDataIt(e.data));
+const fmtTs = e => { const d=logTs(e); return isNaN(d)?(e.data||'—'):d.toLocaleString('it-IT',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}); };
+function logFiltrati(){
+  const q=(window._logSearch||'').trim().toLowerCase();
+  const cat=window._logCat||'';
+  const dal=window._logDal?new Date(window._logDal+'T00:00:00'):null;
+  const al =window._logAl ?new Date(window._logAl +'T23:59:59'):null;
+  return state.logEntries.filter(e=>{
+    if(LOG_ESCLUSI.includes(e.tipo)) return false;
+    const t=LOG_TIPI[e.tipo];
+    if(cat&&t?.cat!==cat) return false;
+    const d=logTs(e);
+    if(dal&&d<dal) return false;
+    if(al&&d>al) return false;
+    if(!q) return true;
+    return [e.nome_completo,e.utente,t?.l||e.tipo,e.oggetto,e.dettaglio,e.causale].some(v=>String(v||'').toLowerCase().includes(q));
+  });
+}
+function renderLog(){
+  const cat=window._logCat||'';
+  const st=`${inpStyle()};width:auto;padding:9px 10px;font-size:13px;`;
+  return `
+    <div>
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end;">
+        <input id="log-search-box" placeholder="🔍  Cerca utente, articolo, dettaglio…" value="${escHtml(window._logSearch||'')}" oninput="window._logSearch=this.value;window._logPag=1;updateLogTable();" style="${inpStyle()};max-width:280px;">
+        <select id="log-cat" onchange="window._logCat=this.value;window._logPag=1;filtroStyle(this);updateLogTable();" style="${st}min-width:150px;${cat?'border-color:var(--verde);background:var(--verde-pale);':''}">
+          <option value="">Tutte le attività</option>
+          ${Object.entries(LOG_CAT).map(([k,l])=>`<option value="${k}" ${cat===k?'selected':''}>${l}</option>`).join('')}
+        </select>
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--grigio-scuro);font-weight:600;">Dal<input id="log-dal" type="date" value="${window._logDal||''}" onchange="window._logDal=this.value;window._logPag=1;updateLogTable();" style="${inpStyle()};max-width:150px;padding:8px 10px;"></div>
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--grigio-scuro);font-weight:600;">Al<input id="log-al" type="date" value="${window._logAl||''}" onchange="window._logAl=this.value;window._logPag=1;updateLogTable();" style="${inpStyle()};max-width:150px;padding:8px 10px;"></div>
+        <button onclick="window._logSearch='';window._logCat='';window._logDal='';window._logAl='';window._logPag=1;render();" style="${btnStyle('ghost',true)}">✕ Reset</button>
+        <button onclick="exportLog()" style="${btnStyle('ghost',true)};margin-left:auto;">⬇ CSV</button>
+      </div>
+      <div id="log-counter" style="font-size:11px;color:var(--grigio);margin-bottom:10px;"></div>
+      <div id="log-table-wrap"></div>
+    </div>`;
+}
+function updateLogTable(){
+  const wrap=document.getElementById('log-table-wrap'); if(!wrap){ render(); return; }
+  const PER_PAG=20;
+  const rows=logFiltrati();
+  const totP=Math.max(1,Math.ceil(rows.length/PER_PAG));
+  const pag=Math.min(Math.max(1,window._logPag||1),totP); window._logPag=pag;
+  const vis=rows.slice((pag-1)*PER_PAG,pag*PER_PAG);
+  const cnt=document.getElementById('log-counter');
+  if(cnt) cnt.textContent=`${rows.length} ${rows.length===1?'attività':'attività'} — pagina ${pag} di ${totP} · carichi, scarichi e spostamenti sono nella pagina Movimenti`;
+  if(!vis.length){ wrap.innerHTML='<div style="text-align:center;color:var(--grigio-chiaro);padding:60px 0;font-size:13px;">Nessuna attività per i criteri selezionati.</div>'; return; }
+  const th='text-align:left;padding:10px 10px;font-weight:700;font-size:10px;color:var(--grigio);text-transform:uppercase;letter-spacing:.8px;white-space:nowrap;';
+  const pb=(p,l,dis)=>`<button onclick="window._logPag=${p};updateLogTable();" ${dis?'disabled':''} style="padding:6px 10px;border-radius:6px;border:1px solid var(--bordo);background:transparent;color:${dis?'var(--grigio-chiaro)':'var(--grigio)'};cursor:${dis?'not-allowed':'pointer'};font-family:inherit;font-size:12px;">${l}</button>`;
+  const nums=Array.from({length:totP},(_,i)=>i+1).filter(p=>p===1||p===totP||Math.abs(p-pag)<=1)
+    .reduce((acc,p,i,arr)=>{ if(i>0&&p-arr[i-1]>1) acc.push('…'); acc.push(p); return acc; },[])
+    .map(p=>p==='…'?'<span style="color:var(--grigio);padding:0 4px;">…</span>':`<button onclick="window._logPag=${p};updateLogTable();" style="width:32px;height:32px;border-radius:6px;border:1px solid ${p===pag?'var(--verde)':'var(--bordo)'};background:${p===pag?'var(--verde)':'transparent'};color:${p===pag?'#fff':'var(--grigio)'};cursor:pointer;font-family:inherit;font-weight:600;font-size:12px;">${p}</button>`).join('');
+  wrap.innerHTML=`<div style="background:#fff;border:1px solid var(--bordo);border-radius:10px;overflow:auto;box-shadow:0 1px 4px #0000000a;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="border-bottom:1px solid var(--bordo);background:var(--grigio-sfondo);">
+          ${['Data/Ora','Utente','Attività','Oggetto','Dettaglio'].map(h=>`<th style="${th}">${h}</th>`).join('')}
+        </tr></thead>
+        <tbody>${vis.map(e=>{ const t=LOG_TIPI[e.tipo]||{l:e.tipo,c:'var(--grigio)'}; return `
+          <tr onmouseover="this.style.background='var(--verde-pale)'" onmouseout="this.style.background='transparent'" style="border-bottom:1px solid var(--bordo);vertical-align:top;">
+            <td style="padding:10px 10px;color:var(--grigio);font-size:11px;white-space:nowrap;">${fmtTs(e)}</td>
+            <td style="padding:10px 10px;white-space:nowrap;"><div style="font-weight:600;font-size:13px;">${escHtml(e.nome_completo||'—')}</div><div style="font-size:11px;color:var(--grigio);">@${escHtml(e.utente||'')}</div></td>
+            <td style="padding:10px 10px;white-space:nowrap;">${pill(t.l,t.c)}</td>
+            <td style="padding:10px 10px;font-size:12px;font-weight:600;color:var(--grigio-scuro);">${escHtml(e.oggetto||'')}${e.magazzino?' '+magPill(e.magazzino):''}</td>
+            <td style="padding:10px 10px;font-size:12px;color:var(--grigio);line-height:1.5;">${escHtml(e.dettaglio||e.causale||'').split(' · ').join('<br>')||'—'}</td>
+          </tr>`; }).join('')}</tbody>
+      </table>
+    </div>
+    ${totP>1?`<div style="display:flex;justify-content:center;align-items:center;gap:6px;margin-top:16px;flex-wrap:wrap;">${pb(1,'«',pag<=1)}${pb(pag-1,'‹',pag<=1)}${nums}${pb(pag+1,'›',pag>=totP)}${pb(totP,'»',pag>=totP)}</div>`:''}`;
+}
+function exportLog(){
+  exportCSV(logFiltrati().map(e=>({data:fmtTs(e),utente:e.nome_completo||e.utente||'',attivita:LOG_TIPI[e.tipo]?.l||e.tipo,
+      oggetto:e.oggetto||'',magazzino:e.magazzino?magNome(e.magazzino):'',dettaglio:e.dettaglio||e.causale||''})),
+    [{key:'data',label:'Data/Ora'},{key:'utente',label:'Utente'},{key:'attivita',label:'Attività'},{key:'oggetto',label:'Oggetto'},{key:'magazzino',label:'Magazzino'},{key:'dettaglio',label:'Dettaglio'}],'registro_attivita.csv');
+}
+
+// ════════════════════════════════════════════════════════════════
 // FLAG COLORE ARTICOLI + FILTRI COLORE / TIPO
 // ════════════════════════════════════════════════════════════════
 const FLAGS = {
@@ -2136,7 +2184,10 @@ async function setFlag(id,flag){
   const prev=a.flag||null;
   if(prev===flag) return;
   a.flag=flag; refreshArtViews();            // aggiornamento immediato
-  try{ await db.update('magazzino_articoli',{flag},`id=eq.${id}`); }
+  try{
+    await db.update('magazzino_articoli',{flag},`id=eq.${id}`);
+    logAttivita('articolo_modificato',{oggetto:oggArt(a),entita:'articolo',entita_id:id,dettaglio:`Colore riga: ${flagLbl(prev)} → ${flagLbl(flag)}`});
+  }
   catch(e){ a.flag=prev; refreshArtViews(); showToast('Impossibile salvare il colore: '+e.message,'error'); }
 }
 
@@ -2354,7 +2405,6 @@ async function submitMovimentoSerial(tipo,art){
   const busy=on=>{ if(btn){ btn.disabled=on; btn.innerHTML=on?'<span class="spinner"></span>Salvataggio…':`Conferma ${tipo}`; } };
   const now=nowStr();
   const who={utente:state.utente.username,nome_utente:state.utente.nome_completo};
-  const logRow=(q)=>({id:uid(),tipo,utente:state.utente.username,nome_completo:state.utente.nome_completo,articolo_id:art.id,quantita:q,causale,data:now,magazzino:state.mag});
 
   if(tipo==='carico'){
     const codici=window._movCodici||[];
@@ -2377,7 +2427,6 @@ async function submitMovimentoSerial(tipo,art){
       if(rientri.length) await db.update('magazzino_articoli_codici',
         {stato:'carico',scadenza:scad,mov_carico_id:movId,data_carico:now,mov_scarico_id:null,data_scarico:null,magazzino:state.mag},
         `id=in.(${rientri.map(r=>r.existingId).join(',')})`);
-      await db.insert('magazzino_log_accessi',logRow(codici.length));
       await loadAll(); closeModal(); showToast(`Carico registrato: ${codici.length} ${codici.length===1?'codice':'codici'}.`);
     }catch(e){
       const m=String(e.message||e);
@@ -2403,7 +2452,6 @@ async function submitMovimentoSerial(tipo,art){
       const movId=uid();
       await db.insert('magazzino_movimenti',{id:movId,articolo_id:art.id,tipo:'scarico',quantita:list.length,causale,scadenza:scad,note,is_scatola:false,n_scatole:null,...who,data:now,magazzino:state.mag});
       await db.update('magazzino_articoli_codici',{stato:'scaricato',mov_scarico_id:movId,data_scarico:now},`id=in.(${list.map(c=>c.id).join(',')})`);
-      await db.insert('magazzino_log_accessi',logRow(list.length));
     }
     await loadAll(); closeModal(); showToast(`Scarico registrato: ${sel.length} ${sel.length===1?'codice':'codici'}.`);
   }catch(e){ errEl.innerHTML=errBox(e.message); busy(false); }
@@ -2548,8 +2596,20 @@ async function submitTipo(existingId){
   const dup=state.tipi.find(t=>t.nome.toLowerCase()===nome.toLowerCase()&&t.id!==existingId);
   if(dup){ errEl.innerHTML=errBox('Tipo già esistente.'); return; }
   try{
-    if(existingId) await db.update('magazzino_articoli_tipo',{nome,codice_singolo,magazzini},`id=eq.${existingId}`);
-    else await db.insert('magazzino_articoli_tipo',{id:uid(),nome,codice_singolo,magazzini});
+    const nomiMag=l=>l.map(magNome).join(', ');
+    if(existingId){
+      const pr=state.tipi.find(t=>t.id===existingId)||{};
+      await db.update('magazzino_articoli_tipo',{nome,codice_singolo,magazzini},`id=eq.${existingId}`);
+      const det=[];
+      if(pr.nome!==nome) det.push(`Nome: ${pr.nome} → ${nome}`);
+      if(!!pr.codice_singolo!==codice_singolo) det.push(`Codice singolo: ${siNo(pr.codice_singolo)} → ${siNo(codice_singolo)}`);
+      if(nomiMag(tipoMags(pr))!==nomiMag(magazzini)) det.push(`Magazzini: ${nomiMag(tipoMags(pr))} → ${nomiMag(magazzini)}`);
+      if(det.length) await logAttivita('tipo_modificato',{oggetto:nome,entita:'tipo',entita_id:existingId,dettaglio:det.join(' · ')});
+    } else {
+      const id=uid();
+      await db.insert('magazzino_articoli_tipo',{id,nome,codice_singolo,magazzini});
+      await logAttivita('tipo_creato',{oggetto:nome,entita:'tipo',entita_id:id,dettaglio:[`Magazzini: ${nomiMag(magazzini)}`,codice_singolo?'Codice singolo prodotto':''].filter(Boolean).join(' · ')});
+    }
     await loadAll(); closeModal(); showToast(existingId?'Tipo aggiornato.':'Tipo creato.');
   }catch(e){ errEl.innerHTML=errBox(e.message); }
 }
@@ -2634,6 +2694,7 @@ async function submitArticolo(existingId){
     mags,
     created_at:nowStr()
   };
+  const prima=existingId?snapArticolo(existingId):null;
   const btnSave=document.getElementById('art-save-btn');
   const lblSave=existingId?'Salva modifiche':'Crea articolo';
   try{
@@ -2641,12 +2702,19 @@ async function submitArticolo(existingId){
     await saveArticolo(art,!existingId);
   }catch(e){ errEl.innerHTML=errBox(e.message); if(btnSave){ btnSave.disabled=false; btnSave.innerHTML=lblSave; } return; }
   const s=window._artImg;
+  const det=existingId?diffArticolo(prima,art):descriviNuovoArticolo(art);
+  let erroreImg=null;
   if(s&&(s.file||s.remove)){
     if(btnSave) btnSave.innerHTML='<span class="spinner"></span>'+(s.file?'Caricamento immagine…':'Rimozione immagine…');
-    try{ await syncArtImage(art.id,codice); await loadAll(); }
-    catch(e){ closeModal(); showToast("Articolo salvato, ma l'immagine non è stata aggiornata: "+e.message,'error'); return; }
+    const imgDet=s.file?(s.currentId?'Immagine sostituita':'Immagine aggiunta'):'Immagine rimossa';
+    try{ await syncArtImage(art.id,codice); det.push(imgDet); await loadAll(); }
+    catch(e){ erroreImg=e; }
   }
-  closeModal(); showToast(existingId?'Articolo aggiornato.':'Articolo creato.');
+  if(!existingId||det.length)
+    await logAttivita(existingId?'articolo_modificato':'articolo_creato',{oggetto:oggArt(art),entita:'articolo',entita_id:art.id,dettaglio:det.join(' · ')});
+  closeModal();
+  if(erroreImg){ showToast("Articolo salvato, ma l'immagine non è stata aggiornata: "+erroreImg.message,'error'); return; }
+  showToast(existingId?'Articolo aggiornato.':'Articolo creato.');
 }
 
 // Nuovo utente
@@ -2686,7 +2754,12 @@ async function submitNuovoUtente(){
   const magazzini=ruolo==='admin'?MAGAZZINI.map(m=>m.id):MAGAZZINI.filter(m=>document.getElementById('nu-mag-'+m.id)?.checked).map(m=>m.id);
   if(!magazzini.length){ errEl.innerHTML=errBox('Seleziona almeno un magazzino.'); return; }
   const hash=await sha256(pass);
-  try{ await saveUtente({username:user,password_hash:hash,nome_completo:nome,ruolo,magazzini},true); closeModal(); showToast('Utente creato.'); }
+  try{
+    await saveUtente({username:user,password_hash:hash,nome_completo:nome,ruolo,magazzini},true);
+    await logAttivita('utente_creato',{oggetto:oggUser({nome_completo:nome,username:user}),entita:'utente',
+      dettaglio:[`Ruolo: ${ruolo==='admin'?'amministratore':'operatore'}`,ruolo==='admin'?'':`Magazzini: ${magazzini.map(magNome).join(', ')}`].filter(Boolean).join(' · ')});
+    closeModal(); showToast('Utente creato.');
+  }
   catch(e){ errEl.innerHTML=errBox(e.message); }
 }
 
@@ -2714,7 +2787,7 @@ async function submitResetPass(userId){
   const hash=await sha256(pass);
   try{
     await db.update('magazzino_utenti',{password_hash:hash},`id=eq.${userId}`);
-    await db.insert('magazzino_log_accessi',{id:uid(),tipo:'reset_password',utente:state.utente.username,nome_completo:state.utente.nome_completo,target_user:userId,data:nowStr()});
+    await logAttivita('reset_password',{oggetto:oggUser(state.utenti.find(x=>x.id===userId)),entita:'utente',entita_id:userId,target_user:userId});
     await loadAll(); closeModal(); showToast('Password aggiornata.');
   } catch(e){ errEl.innerHTML=errBox(e.message); }
 }
