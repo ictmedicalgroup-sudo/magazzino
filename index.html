@@ -277,6 +277,8 @@ async function saveArticolo(art, isNew){
 }
 
 async function deleteArticolo(id){
+  const img=state.articoli.find(a=>a.id===id)?.immagine_id;
+  if(img) imgApi('elimina',{id:img}).catch(e=>console.warn('Immagine non eliminata:',e.message));
   await db.delete('magazzino_articoli_codici',`articolo_id=eq.${id}`).catch(()=>{});
   await db.delete('magazzino_movimenti',`articolo_id=eq.${id}`);
   await db.delete('magazzino_articoli',`id=eq.${id}`);
@@ -337,6 +339,7 @@ function openModal(m){
   const isMov=m.type==='carico'||m.type==='scarico'||m.type==='sposta';
   if(isMov){ window._movModalita='pezzi'; window._movCodici=[]; window._movCodSel=new Set(); }
   if(m.type==='codici_art'){ window._codStato='carico'; window._codQ=''; }
+  if(m.type==='nuovo_art'||m.type==='edit_art'){ const cur=m.art?state.articoli.find(x=>x.id===m.art.id):null; window._artImg={file:null,preview:null,remove:false,currentId:cur?.immagine_id||null}; }
   state.modal=m; render();
   if(isMov&&m.preselectId&&document.getElementById('mov-art')?.value) movArtChange();
   if(isMov&&!document.getElementById('mov-art')?.value&&!state.isMobile){
@@ -357,6 +360,8 @@ function render(){
   app.innerHTML=mainHTML();
   bindMain();
   if(state.modal?.type==='codici_art') updateCodModal(state.modal.id);
+  if((state.modal?.type==='nuovo_art'||state.modal?.type==='edit_art')&&window._artImg) artImgRender();
+  ensureImgUrls();
 }
 
 // ── Loading ───────────────────────────────────────────────────
@@ -626,7 +631,7 @@ function mobileGiacenzaCard(g){
   const sotto=scortaAttiva(g.art)&&g.pezzi<g.art.scorta_min;
   return `<div style="background:${flagBg(g.art)};border:1px solid ${sotto?'var(--rosso)':'var(--bordo)'};border-radius:10px;padding:14px 16px;margin-bottom:10px;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-      <div><span style="display:inline-flex;align-items:center;gap:8px;">${flagDot(g.art)}${pill(g.art.codice,'var(--grigio)')}</span><div style="font-weight:600;font-size:14px;margin-top:6px;">${g.art.nome}${artBadges(g.art)}</div></div>
+      <div><span style="display:inline-flex;align-items:center;gap:8px;">${flagDot(g.art)}${pill(g.art.codice,'var(--grigio)')}</span><div style="display:flex;align-items:center;gap:10px;margin-top:6px;">${thumbHTML(g.art,44)}<div style="font-weight:600;font-size:14px;">${g.art.nome}${artBadges(g.art)}</div></div></div>
       <div style="text-align:right;"><div style="font-weight:700;font-size:22px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</div><div style="font-size:11px;color:var(--grigio);">${g.art.um}</div></div>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
@@ -646,7 +651,7 @@ function desktopGiacenzaRow(g){
   return `<tr ${rowAttrs(g.art)}>
     ${flagCell(g.art)}
     <td style="padding:10px 10px;white-space:nowrap;">${pill(g.art.codice,'var(--grigio)')}${g.art.barcode?`<div style="font-size:10px;color:var(--grigio-chiaro);font-family:monospace;margin-top:5px;padding-left:9px;">${g.art.barcode}</div>`:''}</td>
-    <td style="padding:10px 10px;font-weight:600;">${g.art.nome}${artBadges(g.art)}</td>
+    <td style="padding:10px 10px;font-weight:600;"><div style="display:flex;align-items:center;gap:10px;">${thumbHTML(g.art)}<div>${g.art.nome}${artBadges(g.art)}</div></div></td>
     <td style="padding:10px 10px;color:var(--grigio);">${g.art.um}</td>
     <td style="padding:10px 10px;"><span style="font-weight:700;font-size:15px;color:${sotto?'var(--rosso)':g.pezzi<=0?'var(--grigio-chiaro)':'var(--testo)'}">${fmt(g.pezzi)}</span>${pzSc}</td>
     <td style="padding:10px 10px;color:var(--grigio);">${g.art.pezzi_scatola||'—'}</td>
@@ -661,6 +666,7 @@ function desktopGiacenzaRow(g){
 }
 
 function updateGiacenzeTable(){
+  setTimeout(ensureImgUrls,0);
   const giacenze=calcGiacenze();
   const search=(window._giacSearch||'').toLowerCase();
   const filtro=window._giacFiltro||'tutti';
@@ -871,6 +877,7 @@ function updateArticoliTable(){
   const wrap=document.getElementById('art-table-wrap');
   if(!wrap){ render(); return; }
   wrap.innerHTML=artTableOrEmpty(articoliFiltrati());
+  ensureImgUrls();
 }
 
 function confirmDeleteArt(id){
@@ -1177,6 +1184,7 @@ function renderModal(giacenze){
   else if(m.type==='edit_tipo') html=tipoModal(m.tipo);
   else if(m.type==='nuovo_art'||m.type==='edit_art') html=articoloModal(m.art);
   else if(m.type==='note_art') html=noteArtModal(m.id);
+  else if(m.type==='img_art') html=imgArtModal(m.id);
   else if(m.type==='codici_art') html=codiciArtModal(m.id);
   else if(m.type==='nuovo_utente') html=nuovoUtenteModal();
   else if(m.type==='reset_pass') html=resetPassModal(m.userId,m.userName);
@@ -1701,7 +1709,7 @@ function articoliTableHTML(list){
     return `<tr ${rowAttrs(a)}>
       ${flagCell(a)}
       <td style="padding:10px 10px;white-space:nowrap;">${pill(a.codice,'var(--grigio)')}${a.barcode?`<div style="font-size:10px;color:var(--grigio-chiaro);font-family:monospace;margin-top:5px;padding-left:9px;">${a.barcode}</div>`:''}</td>
-      <td style="padding:10px 10px;font-weight:600;">${a.nome}${artBadges(a)}</td>
+      <td style="padding:10px 10px;font-weight:600;"><div style="display:flex;align-items:center;gap:10px;">${thumbHTML(a)}<div>${a.nome}${artBadges(a)}</div></div></td>
       <td style="padding:10px 10px;color:var(--grigio);">${a.um}</td>
       ${cells}
       <td style="padding:10px 10px;border-left:2px solid var(--bordo);"><div style="display:flex;gap:6px;justify-content:flex-end;white-space:nowrap;">
@@ -1887,6 +1895,172 @@ function spostaInfoHTML(art){
   const {from,to}=state.modal;
   const gf=calcGiacenze(from)[art.id]?.pezzi??0, gt=calcGiacenze(to)[art.id]?.pezzi??0;
   return `<div style="background:var(--grigio-sfondo);border-radius:6px;padding:10px 14px;font-size:12px;color:var(--grigio);display:flex;gap:16px;flex-wrap:wrap;"><span style="font-weight:700;color:var(--testo);">${escHtml(art.nome)}</span><span>${magNome(from)}: <b style="color:var(--testo);">${fmt(gf)} ${art.um}</b></span><span>${magNome(to)}: <b style="color:var(--testo);">${fmt(gt)} ${art.um}</b></span></div>`;
+}
+
+// ════════════════════════════════════════════════════════════════
+// IMMAGINI ARTICOLI (OneDrive files@medicalgroup.it → cartella "magazzino")
+// Il ponte è la Edge Function "magazzino-immagini": crea la sessione di
+// upload (il file va direttamente da browser a Microsoft) e fornisce gli
+// URL temporanei per visualizzare miniature e immagini.
+// ════════════════════════════════════════════════════════════════
+const IMG_FN = `${SUPA_URL}/functions/v1/magazzino-immagini`;
+const IMG_BLANK = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+const IMG_TTL = 45*60*1000;          // gli URL di Microsoft durano circa un'ora
+const IMG_MAX_LATO = 1600;           // ridimensionamento prima dell'upload
+state.imgUrls = {};                  // { [immagine_id]: { full, thumb, exp } }
+let _imgLoading = false;
+
+async function imgApi(action, payload={}){
+  const r = await fetch(IMG_FN,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPA_KEY},body:JSON.stringify({action,...payload})});
+  const d = await r.json().catch(()=>({ok:false,error:'Risposta non valida dal server immagini'}));
+  if(!r.ok||!d.ok) throw new Error(d.error||('Errore server immagini ('+r.status+')'));
+  return d;
+}
+
+// Miniatura cliccabile (vuota finché l'URL non arriva)
+function thumbHTML(a,size=36){
+  if(!a?.immagine_id) return '';
+  const c=state.imgUrls[a.immagine_id];
+  return `<img data-img-id="${escHtml(a.immagine_id)}" src="${c?.thumb||IMG_BLANK}" alt="" title="Apri immagine"
+    onclick="event.stopPropagation();openModal({type:'img_art',id:'${a.id}'})"
+    style="width:${size}px;height:${size}px;object-fit:cover;border-radius:6px;border:1px solid var(--bordo);background:var(--grigio-sfondo);cursor:zoom-in;flex-shrink:0;display:block;">`;
+}
+
+// Recupera gli URL mancanti/scaduti e aggiorna le <img> già a schermo
+async function ensureImgUrls(){
+  const now=Date.now();
+  const applica=()=>document.querySelectorAll('img[data-img-id]').forEach(el=>{
+    const c=state.imgUrls[el.dataset.imgId]; if(!c) return;
+    const want=el.dataset.full==='1'?c.full:c.thumb;
+    if(want&&el.getAttribute('src')!==want) el.src=want;
+  });
+  applica();
+  if(_imgLoading) return;
+  const ids=[...new Set(state.articoli.map(a=>a.immagine_id).filter(Boolean))].filter(id=>!(state.imgUrls[id]?.exp>now));
+  if(!ids.length) return;
+  _imgLoading=true;
+  try{
+    const d=await imgApi('urls',{ids});
+    ids.forEach(id=>{ const it=d.items?.[id]; state.imgUrls[id]=it?{full:it.full,thumb:it.thumb,exp:now+IMG_TTL}:{full:'',thumb:'',exp:now+5*60*1000}; });
+    applica();
+  }catch(e){ console.warn('Immagini non disponibili:',e.message); }
+  finally{ _imgLoading=false; }
+}
+
+// Modale di visualizzazione
+function imgArtModal(id){
+  const a=state.articoli.find(x=>x.id===id);
+  if(!a?.immagine_id) return `${modalHeader('Immagine')}<div>Nessuna immagine.</div>`;
+  const c=state.imgUrls[a.immagine_id];
+  return `${modalHeader('Immagine articolo','var(--verde)')}
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">${pill(escHtml(a.codice),'var(--grigio)')}<span style="font-weight:600;font-size:14px;">${escHtml(a.nome)}</span></div>
+      <div style="background:var(--grigio-sfondo);border:1px solid var(--bordo);border-radius:8px;display:flex;align-items:center;justify-content:center;min-height:200px;padding:8px;">
+        <img data-img-id="${escHtml(a.immagine_id)}" data-full="1" src="${c?.full||IMG_BLANK}" alt="${escHtml(a.nome)}" style="max-width:100%;max-height:60vh;border-radius:6px;display:block;">
+      </div>
+      ${c?.full?`<a href="${c.full}" target="_blank" rel="noopener" style="font-size:12px;color:var(--grigio);align-self:flex-start;">Apri a dimensione intera ↗</a>`:''}
+      <div style="display:flex;justify-content:flex-end;">
+        <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Chiudi</button>
+      </div>
+    </div>`;
+}
+
+// ── Modale articolo: zona immagine (drag & drop + scelta file) ──
+function artImgSectionHTML(art){
+  return `<div style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Immagine
+    <input type="file" id="art-img-file" accept="image/*" style="display:none;" onchange="artImgPick(this.files&&this.files[0]);this.value='';">
+    <div id="art-img-zone" tabindex="0" role="button" aria-label="Carica immagine"
+      onclick="document.getElementById('art-img-file').click()"
+      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();document.getElementById('art-img-file').click();}"
+      ondragover="event.preventDefault();artImgDrag(true)" ondragenter="event.preventDefault();artImgDrag(true)"
+      ondragleave="artImgDrag(false)" ondrop="event.preventDefault();artImgDrag(false);artImgPick(event.dataTransfer.files&&event.dataTransfer.files[0])"
+      style="border:2px dashed var(--bordo);border-radius:8px;padding:12px;cursor:pointer;background:#fff;transition:border-color .15s,background .15s;"></div>
+    <div id="art-img-msg"></div>
+  </div>`;
+}
+function artImgRender(){
+  const z=document.getElementById('art-img-zone'); if(!z) return;
+  const s=window._artImg;
+  const src=s.preview||(!s.remove&&s.currentId?(state.imgUrls[s.currentId]?.thumb||IMG_BLANK):null);
+  if(src){
+    z.innerHTML=`<div style="display:flex;align-items:center;gap:14px;">
+      <img ${!s.preview&&s.currentId?`data-img-id="${escHtml(s.currentId)}"`:''} src="${src}" style="width:84px;height:84px;object-fit:cover;border-radius:6px;border:1px solid var(--bordo);background:var(--grigio-sfondo);flex-shrink:0;">
+      <div style="display:flex;flex-direction:column;gap:6px;font-weight:400;">
+        <span style="font-size:12px;color:var(--testo);">${s.file?escHtml(s.file.name)+' <span style="color:var(--grigio);">(da caricare)</span>':'Immagine attuale'}</span>
+        <span style="font-size:11px;color:var(--grigio);">Trascina qui un'altra immagine o clicca per sostituirla.</span>
+        <button type="button" onclick="event.stopPropagation();artImgRemove()" style="${btnStyle('danger',true)};align-self:flex-start;">Rimuovi immagine</button>
+      </div>
+    </div>`;
+  } else {
+    z.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 0;text-align:center;">
+      <span style="font-size:22px;color:var(--grigio-chiaro);">⬆</span>
+      <span style="font-size:13px;color:var(--grigio-scuro);font-weight:600;">Trascina qui un'immagine</span>
+      <span style="font-size:11px;color:var(--grigio);font-weight:400;">oppure clicca per sceglierla dal computer · JPG, PNG, WEBP · max 15 MB</span>
+      ${s.remove?'<span style="font-size:11px;color:var(--arancio);font-weight:600;margin-top:4px;">L\'immagine attuale verrà rimossa al salvataggio</span>':''}
+    </div>`;
+  }
+  ensureImgUrls();
+}
+function artImgDrag(on){
+  const z=document.getElementById('art-img-zone'); if(!z) return;
+  z.style.borderColor=on?'var(--verde)':'var(--bordo)';
+  z.style.background=on?'var(--verde-pale)':'#fff';
+}
+function artImgPick(file){
+  const msg=document.getElementById('art-img-msg'); if(msg) msg.innerHTML='';
+  if(!file) return;
+  if(!file.type.startsWith('image/')){ if(msg) msg.innerHTML=errBox('Il file scelto non è un\'immagine.'); return; }
+  if(file.size>15*1024*1024){ if(msg) msg.innerHTML=errBox('Immagine troppo grande (massimo 15 MB).'); return; }
+  const s=window._artImg;
+  if(s.preview) URL.revokeObjectURL(s.preview);
+  s.file=file; s.preview=URL.createObjectURL(file); s.remove=false;
+  artImgRender();
+}
+function artImgRemove(){
+  const s=window._artImg;
+  if(s.preview) URL.revokeObjectURL(s.preview);
+  s.file=null; s.preview=null; s.remove=!!s.currentId;
+  artImgRender();
+}
+
+// Riduce le foto grandi (max 1600 px di lato, JPEG) prima dell'upload
+async function preparaImmagine(file){
+  try{
+    const bmp=await createImageBitmap(file);
+    const scala=Math.min(1,IMG_MAX_LATO/Math.max(bmp.width,bmp.height));
+    if(scala===1&&file.size<=1.5*1024*1024){ bmp.close?.(); return file; }
+    const c=document.createElement('canvas');
+    c.width=Math.round(bmp.width*scala); c.height=Math.round(bmp.height*scala);
+    const ctx=c.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,c.width,c.height);
+    ctx.drawImage(bmp,0,0,c.width,c.height); bmp.close?.();
+    const blob=await new Promise(res=>c.toBlob(res,'image/jpeg',0.85));
+    if(!blob) return file;
+    return new File([blob],file.name.replace(/\.[^.]+$/,'')+'.jpg',{type:'image/jpeg'});
+  }catch(e){ return file; }   // formato non decodificabile dal browser (es. HEIC): carico l'originale
+}
+
+async function caricaImmagine(codice,file){
+  const f=await preparaImmagine(file);
+  const {upload_url}=await imgApi('upload',{codice,file_nome:f.name,file_size:f.size,file_mime:f.type||'image/jpeg'});
+  const r=await fetch(upload_url,{method:'PUT',headers:{'Content-Range':`bytes 0-${f.size-1}/${f.size}`},body:f});
+  const item=await r.json().catch(()=>({}));
+  if(!r.ok||!item.id) throw new Error('Upload su OneDrive non riuscito'+(item.error?.message?': '+item.error.message:''));
+  return {id:item.id,nome:item.name||f.name};
+}
+
+// Applica all'articolo salvato le modifiche all'immagine fatte nella modale
+async function syncArtImage(artId,codice){
+  const s=window._artImg; if(!s||(!s.file&&!s.remove)) return;
+  const old=s.currentId;
+  if(s.file){
+    const up=await caricaImmagine(codice,s.file);
+    await db.update('magazzino_articoli',{immagine_id:up.id,immagine_nome:up.nome},`id=eq.${artId}`);
+  } else if(s.remove){
+    await db.update('magazzino_articoli',{immagine_id:null,immagine_nome:null},`id=eq.${artId}`);
+  }
+  if(old) imgApi('elimina',{id:old}).catch(e=>console.warn('Vecchia immagine non eliminata:',e.message));
+  if(s.preview) URL.revokeObjectURL(s.preview);
+  window._artImg=null;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -2397,6 +2571,7 @@ function articoloModal(art){
         <input id="art-barcode" value="${art?.barcode||''}" placeholder="Digita il barcode del prodotto" style="${inpStyle()}">
       </label>
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;"><span>Descrizione <span style="color:var(--verde);">*</span></span><input id="art-nome" value="${art?.nome||''}" placeholder="es. Guanti nitrile M" style="${inpStyle()}"></label>
+      ${artImgSectionHTML(art)}
       <label style="display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--grigio-scuro);font-weight:600;">Unità di misura
         <select id="art-um" style="${inpStyle()}">
           ${['pz','conf','kg','g','l','ml','m'].map(u=>`<option value="${u}" ${(art?.um||'pz')===u?'selected':''}>${u}</option>`).join('')}
@@ -2420,7 +2595,7 @@ function articoloModal(art){
       <div id="art-err"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">
         <button onclick="closeModal();" style="${btnStyle('ghost',false)}">Annulla</button>
-        <button onclick="submitArticolo(${isEdit?`'${art.id}'`:'null'})" style="${btnStyle('primary',false)}">${isEdit?'Salva modifiche':'Crea articolo'}</button>
+        <button id="art-save-btn" onclick="submitArticolo(${isEdit?`'${art.id}'`:'null'})" style="${btnStyle('primary',false)}">${isEdit?'Salva modifiche':'Crea articolo'}</button>
       </div>
     </div>`;
 }
@@ -2459,8 +2634,19 @@ async function submitArticolo(existingId){
     mags,
     created_at:nowStr()
   };
-  try{ await saveArticolo(art,!existingId); closeModal(); showToast(existingId?'Articolo aggiornato.':'Articolo creato.'); }
-  catch(e){ errEl.innerHTML=errBox(e.message); }
+  const btnSave=document.getElementById('art-save-btn');
+  const lblSave=existingId?'Salva modifiche':'Crea articolo';
+  try{
+    if(btnSave){ btnSave.disabled=true; btnSave.innerHTML='<span class="spinner"></span>Salvataggio…'; }
+    await saveArticolo(art,!existingId);
+  }catch(e){ errEl.innerHTML=errBox(e.message); if(btnSave){ btnSave.disabled=false; btnSave.innerHTML=lblSave; } return; }
+  const s=window._artImg;
+  if(s&&(s.file||s.remove)){
+    if(btnSave) btnSave.innerHTML='<span class="spinner"></span>'+(s.file?'Caricamento immagine…':'Rimozione immagine…');
+    try{ await syncArtImage(art.id,codice); await loadAll(); }
+    catch(e){ closeModal(); showToast("Articolo salvato, ma l'immagine non è stata aggiornata: "+e.message,'error'); return; }
+  }
+  closeModal(); showToast(existingId?'Articolo aggiornato.':'Articolo creato.');
 }
 
 // Nuovo utente
